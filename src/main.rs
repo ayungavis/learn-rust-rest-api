@@ -23,6 +23,12 @@ async fn main() -> Result<()> {
         .connect(&config.database_url)
         .await
         .context("failed to connect to database")?;
+
+    sqlx::migrate!()
+        .run(&database)
+        .await
+        .context("failed to run database migrations")?;
+
     let state = AppState { database };
 
     let app = build_router(state);
