@@ -1,19 +1,13 @@
 mod config;
-mod health;
-mod state;
 
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use axum::{Router, routing::get};
+use rust_catalog_api::{AppState, build_router};
 use sqlx::postgres::PgPoolOptions;
 use tokio::net::TcpListener;
 
-use crate::{
-    config::Config,
-    health::{live, ready},
-    state::AppState,
-};
+use crate::config::Config;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -31,10 +25,7 @@ async fn main() -> Result<()> {
         .context("failed to connect to database")?;
     let state = AppState { database };
 
-    let app = Router::new()
-        .route("/api/v1/health/live", get(live))
-        .route("/api/v1/health/ready", get(ready))
-        .with_state(state);
+    let app = build_router(state);
     let listener = TcpListener::bind(config.address)
         .await
         .with_context(|| format!("failed to bind HTTP listener to {}", config.address))?;
