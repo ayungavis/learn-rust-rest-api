@@ -16,6 +16,8 @@ pub enum AppError {
     NotFound { request_id: String },
     #[error("request timed out")]
     RequestTimeout { request_id: String },
+    #[error("email confirmation token is invalid or expired")]
+    InvalidConfirmationToken { request_id: String },
     #[error("internal server error")]
     Internal { request_id: String },
 }
@@ -51,6 +53,12 @@ impl AppError {
 
     pub fn request_timeout(request_id: &RequestId) -> Self {
         Self::RequestTimeout {
+            request_id: request_id_value(request_id),
+        }
+    }
+
+    pub fn invalid_confirmation_token(request_id: &RequestId) -> Self {
+        Self::InvalidConfirmationToken {
             request_id: request_id_value(request_id),
         }
     }
@@ -91,6 +99,13 @@ impl IntoResponse for AppError {
                 StatusCode::REQUEST_TIMEOUT,
                 "REQUEST_TIMEOUT",
                 "The request took too long",
+                request_id,
+                None,
+            ),
+            Self::InvalidConfirmationToken { request_id } => (
+                StatusCode::BAD_REQUEST,
+                "INVALID_OR_EXPIRED_TOKEN",
+                "The email confirmation token is invalid or expired",
                 request_id,
                 None,
             ),

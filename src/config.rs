@@ -5,6 +5,9 @@ use anyhow::{Context, Result};
 pub struct Config {
     pub address: SocketAddr,
     pub database_url: String,
+    pub frontend_url: String,
+    pub mail_from: String,
+    pub smtp_url: String,
 }
 
 impl Config {
@@ -19,9 +22,20 @@ impl Config {
         let database_url =
             env::var("DATABASE_URL").context("DATABASE_URL environment variable is required")?;
 
+        let frontend_url =
+            env::var("FRONTEND_URL").context("FRONTEND_URL environment variable is required")?;
+
+        let mail_from =
+            env::var("MAIL_FROM").context("MAIL_FRON environment variable is required")?;
+
+        let smtp_url = env::var("SMTP_URL").context("SMTP_URL environment variable is required")?;
+
         Ok(Self {
             address,
             database_url,
+            frontend_url,
+            mail_from,
+            smtp_url,
         })
     }
 }

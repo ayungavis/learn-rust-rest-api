@@ -5,6 +5,7 @@ use axum::{
     error_handling::HandleErrorLayer,
     routing::{get, post},
 };
+pub use mail::Mailer;
 pub use state::AppState;
 use tower::{ServiceBuilder, timeout::TimeoutLayer};
 use tower_http::{
@@ -14,7 +15,7 @@ use tower_http::{
 use tracing::Level;
 
 use crate::{
-    auth::register,
+    auth::{confirm_email, register},
     error::AppError,
     health::{live, ready},
 };
@@ -22,6 +23,7 @@ use crate::{
 mod auth;
 mod error;
 mod health;
+pub mod mail;
 mod state;
 
 pub fn build_router(state: AppState) -> Router {
@@ -41,6 +43,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/health/live", get(live))
         .route("/api/v1/health/ready", get(ready))
         .route("/api/v1/auth/register", post(register))
+        .route("/api/v1/auth/confirm-email", post(confirm_email))
         .fallback(route_not_found)
         .layer(middleware)
         .with_state(state)

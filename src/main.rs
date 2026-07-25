@@ -3,7 +3,7 @@ mod config;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use rust_catalog_api::{AppState, build_router};
+use rust_catalog_api::{AppState, Mailer, build_router};
 use sqlx::postgres::PgPoolOptions;
 use tokio::net::TcpListener;
 
@@ -29,7 +29,10 @@ async fn main() -> Result<()> {
         .await
         .context("failed to run database migrations")?;
 
-    let state = AppState { database };
+    let mailer = Mailer::new(&config.smtp_url, &config.mail_from, config.frontend_url)
+        .context("failed to configure email transport")?;
+
+    let state = AppState { database, mailer };
 
     let app = build_router(state);
     let listener = TcpListener::bind(config.address)
