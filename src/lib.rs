@@ -1,6 +1,10 @@
 use std::time::Duration;
 
-use axum::{BoxError, Extension, Router, error_handling::HandleErrorLayer, routing::get};
+use axum::{
+    BoxError, Extension, Router,
+    error_handling::HandleErrorLayer,
+    routing::{get, post},
+};
 pub use state::AppState;
 use tower::{ServiceBuilder, timeout::TimeoutLayer};
 use tower_http::{
@@ -10,10 +14,12 @@ use tower_http::{
 use tracing::Level;
 
 use crate::{
+    auth::register,
     error::AppError,
     health::{live, ready},
 };
 
+mod auth;
 mod error;
 mod health;
 mod state;
@@ -34,6 +40,7 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/api/v1/health/live", get(live))
         .route("/api/v1/health/ready", get(ready))
+        .route("/api/v1/auth/register", post(register))
         .fallback(route_not_found)
         .layer(middleware)
         .with_state(state)
@@ -52,5 +59,5 @@ async fn handle_middleware_error(
     }
 
     tracing::error!(error = ?error, "unhandled middleware error");
-    AppError::internal(&request_id)
+    AppError::internal(&request_id, "middleware", error.as_ref())
 }
