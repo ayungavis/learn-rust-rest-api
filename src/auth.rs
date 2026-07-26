@@ -5,7 +5,11 @@ use argon2::{
         rand_core::{OsRng, RngCore},
     },
 };
-use axum::{Extension, Json, extract::State, http::StatusCode};
+use axum::{
+    Extension, Json,
+    extract::{FromRequestParts, State},
+    http::{HeaderMap, StatusCode, header::AUTHORIZATION, request::Parts},
+};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -78,6 +82,11 @@ struct LoginUser {
     id: Uuid,
     password_hash: String,
     email_verified: bool,
+}
+
+#[derive(FromRow)]
+pub struct AuthenticatedSession {
+    id: Uuid,
 }
 
 struct PendingConfirmation {
@@ -221,6 +230,44 @@ pub async fn login(
         token_type: "Bearer",
         expires_in: SESSION_TTL_SECONDS,
     }))
+}
+
+pub async fn logout(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    session: AuthenticatedSession,
+) -> Result<StatusCode, AppError> {
+    revoke_session(&state.database, session.id)
+        .await
+        .map_err(|error| AppError::internal(&request_id, "revoke_session", &error))?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+impl FromRequestParts<AppState> for AuthenticatedSession {
+    type Rejection = AppError;
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let request_id = parts
+            .extensions
+            .get::<RequestId>()
+            .cloned()
+            .ok_or_else(AppError::missing_request_id)?;
+
+        let encoded_token = bearer_token(&parts.headers)
+            .ok_or_else(|| AppError::authentication_required(&request_id))?;
+
+        let token_hash = decode_and_hash_token(encoded_token)
+            .map_err(|_| AppError::authentication_required(&request_id))?;
+
+        let session = find_active_session(&state.database, &token_hash)
+            .await
+            .map_err(|error| AppError::internal(&request_id, "find_active_session", &error))?;
+
+        session.ok_or_else(|| AppError::authentication_required(&request_id))
+    }
 }
 
 fn validate_registration(input: RegisterRequest) -> Result<ValidatedRegistration, Vec<FieldError>> {
@@ -506,6 +553,55 @@ async fn insert_session(
     Ok(())
 }
 
+fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    let authorization = headers.get(AUTHORIZATION)?.to_str().ok()?;
+
+    let (scheme, token) = authorization.split_once(" ")?;
+
+    if scheme.eq_ignore_ascii_case("Bearer")
+        && !token.is_empty()
+        && !token.chars().any(char::is_whitespace)
+    {
+        return Some(token);
+    }
+
+    None
+}
+
+async fn find_active_session(
+    database: &PgPool,
+    token_hash: &[u8],
+) -> Result<Option<AuthenticatedSession>, sqlx::Error> {
+    sqlx::query_as::<_, AuthenticatedSession>(
+        r#"
+        SELECT id
+        FROM sessions
+        WHERE token_hash = $1
+            AND revoked_at IS NULL
+            AND expires_at > now()
+        "#,
+    )
+    .bind(token_hash)
+    .fetch_optional(database)
+    .await
+}
+
+async fn revoke_session(database: &PgPool, session_id: Uuid) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        UPDATE sessions
+        SET revoked_at =
+            COALESCE(revoked_at, now())
+        WHERE id = $1
+        "#,
+    )
+    .bind(session_id)
+    .execute(database)
+    .await?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
@@ -513,10 +609,11 @@ mod tests {
         Argon2,
         password_hash::{PasswordHash, PasswordVerifier},
     };
+    use axum::http::{HeaderMap, HeaderValue, header::AUTHORIZATION};
 
     use crate::auth::{decode_and_hash_token, generate_opaque_token, verify_password};
 
-    use super::{RegisterRequest, hash_password, validate_registration};
+    use super::{RegisterRequest, bearer_token, hash_password, validate_registration};
 
     #[test]
     fn registration_validation_should_normalize_user_fields() -> Result<()> {
@@ -567,5 +664,17 @@ mod tests {
         assert!(!verified);
 
         Ok(())
+    }
+
+    #[test]
+    fn bearer_token_should_extract_valid_token() {
+        let mut headers = HeaderMap::new();
+
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_static("Bearer valid-token"),
+        );
+
+        assert_eq!(bearer_token(&headers), Some("valid-token"))
     }
 }

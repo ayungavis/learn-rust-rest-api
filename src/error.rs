@@ -26,6 +26,8 @@ pub enum AppError {
     InvalidCredentials { request_id: String },
     #[error("email address is not verified")]
     EmailNotVerified { request_id: String },
+    #[error("authentication is required")]
+    AuthenticationRequired { request_id: String },
     #[error("internal server error")]
     Internal { request_id: String },
 }
@@ -83,6 +85,20 @@ impl AppError {
         }
     }
 
+    pub fn authentication_required(request_id: &RequestId) -> Self {
+        Self::AuthenticationRequired {
+            request_id: request_id_value(request_id),
+        }
+    }
+
+    pub fn missing_request_id() -> Self {
+        tracing::error!("request ID extension is missing");
+
+        Self::Internal {
+            request_id: "missing-request-id".to_owned(),
+        }
+    }
+
     pub fn internal<E>(request_id: &RequestId, operation: &'static str, error: &E) -> Self
     where
         E: Debug + ?Sized,
@@ -97,7 +113,10 @@ impl AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> axum::response::Response {
-        let requires_authentication = matches!(&self, Self::InvalidCredentials { .. });
+        let requires_authentication = matches!(
+            &self,
+            Self::InvalidCredentials { .. } | Self::AuthenticationRequired { .. }
+        );
 
         let (status, code, message, request_id, details) = match self {
             Self::Validation {
@@ -142,6 +161,13 @@ impl IntoResponse for AppError {
                 StatusCode::FORBIDDEN,
                 "EMAIL_NOT_VERIFIED",
                 "Confirm your email before signing in",
+                request_id,
+                None,
+            ),
+            Self::AuthenticationRequired { request_id } => (
+                StatusCode::UNAUTHORIZED,
+                "AUTHENTICATION_REQUIRED",
+                "A valid Bearer token is required",
                 request_id,
                 None,
             ),
