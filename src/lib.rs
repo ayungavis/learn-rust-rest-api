@@ -15,7 +15,7 @@ use tower_http::{
 use tracing::Level;
 
 use crate::{
-    auth::{confirm_email, register},
+    auth::{confirm_email, login, register},
     error::AppError,
     health::{live, ready},
 };
@@ -43,6 +43,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/health/live", get(live))
         .route("/api/v1/health/ready", get(ready))
         .route("/api/v1/auth/register", post(register))
+        .route("/api/v1/auth/login", post(login))
         .route("/api/v1/auth/confirm-email", post(confirm_email))
         .fallback(route_not_found)
         .layer(middleware)

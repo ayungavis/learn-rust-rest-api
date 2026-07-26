@@ -1,7 +1,7 @@
 use argon2::{
-    Argon2, PasswordHasher,
+    Argon2,
     password_hash::{
-        SaltString,
+        Error as PasswordHashError, PasswordHash, PasswordHasher, PasswordVerifier, SaltString,
         rand_core::{OsRng, RngCore},
     },
 };
@@ -18,6 +18,10 @@ use crate::{
     AppState,
     error::{AppError, FieldError},
 };
+
+const SESSION_TTL_SECONDS: u64 = 7 * 24 * 60 * 60; // 7 days
+
+const DUMMY_PASSWORD_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$Awsq1081k1ZMw1B1JrZpVQ$Y7JdeK5+ihsnGZLY00kSsZE1Ml31WK/FQld1hecbg0M";
 
 const TOKEN_BYTES: usize = 32;
 
@@ -43,6 +47,19 @@ pub struct ConfirmEmailResponse {
     message: &'static str,
 }
 
+#[derive(Deserialize)]
+pub struct LoginRequest {
+    email: String,
+    password: String,
+}
+
+#[derive(Serialize)]
+pub struct LoginResponse {
+    access_token: String,
+    token_type: &'static str,
+    expires_in: u64,
+}
+
 struct ValidatedRegistration {
     email: String,
     password: String,
@@ -56,12 +73,19 @@ struct RegistrationUser {
     email_verified: bool,
 }
 
+#[derive(FromRow)]
+struct LoginUser {
+    id: Uuid,
+    password_hash: String,
+    email_verified: bool,
+}
+
 struct PendingConfirmation {
     email: String,
     token: String,
 }
 
-struct ConfirmationToken {
+struct OpaqueToken {
     encoded: String,
     hash: Vec<u8>,
 }
@@ -80,6 +104,14 @@ enum DecodeTokenError {
     Encoding(#[from] base64::DecodeError),
     #[error("token length is invalid")]
     Length,
+}
+
+#[derive(Debug, Error)]
+enum VerifyPasswordError {
+    #[error("password verification task failed")]
+    Task(#[from] tokio::task::JoinError),
+    #[error("password verification failed")]
+    Verify(#[from] PasswordHashError),
 }
 
 pub async fn register(
@@ -139,6 +171,55 @@ pub async fn confirm_email(
 
     Ok(Json(ConfirmEmailResponse {
         message: "Email confirmed",
+    }))
+}
+
+pub async fn login(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    Json(input): Json<LoginRequest>,
+) -> Result<Json<LoginResponse>, AppError> {
+    if !(1..=128).contains(&input.password.chars().count()) {
+        return Err(AppError::invalid_credentials(&request_id));
+    }
+
+    let email = input.email.trim().to_lowercase();
+
+    let user = find_login_user(&state.database, &email)
+        .await
+        .map_err(|error| AppError::internal(&request_id, "find_login_user", &error))?;
+
+    let password_hash = user
+        .as_ref()
+        .map_or(DUMMY_PASSWORD_HASH, |user| user.password_hash.as_str())
+        .to_owned();
+
+    let password_valid = verify_password(input.password, password_hash)
+        .await
+        .map_err(|error| AppError::internal(&request_id, "verify_password", &error))?;
+
+    if !password_valid {
+        return Err(AppError::invalid_credentials(&request_id));
+    }
+
+    let Some(user) = user else {
+        return Err(AppError::invalid_credentials(&request_id));
+    };
+
+    if !user.email_verified {
+        return Err(AppError::email_not_verified(&request_id));
+    }
+
+    let token = generate_opaque_token();
+
+    insert_session(&state.database, user.id, &token.hash)
+        .await
+        .map_err(|error| AppError::internal(&request_id, "insert_session", &error))?;
+
+    Ok(Json(LoginResponse {
+        access_token: token.encoded,
+        token_type: "Bearer",
+        expires_in: SESSION_TTL_SECONDS,
     }))
 }
 
@@ -250,7 +331,7 @@ async fn create_registration(
         return Ok(None);
     }
 
-    let token = generate_confirmation_token();
+    let token = generate_opaque_token();
 
     sqlx::query(
         r#"
@@ -297,11 +378,11 @@ async fn create_registration(
     }))
 }
 
-fn generate_confirmation_token() -> ConfirmationToken {
+fn generate_opaque_token() -> OpaqueToken {
     let mut raw = [0_u8; TOKEN_BYTES];
     OsRng.fill_bytes(&mut raw);
 
-    ConfirmationToken {
+    OpaqueToken {
         encoded: URL_SAFE_NO_PAD.encode(raw),
         hash: Sha256::digest(raw).to_vec(),
     }
@@ -360,6 +441,71 @@ async fn consume_confirmation_token(
     Ok(true)
 }
 
+async fn find_login_user(database: &PgPool, email: &str) -> Result<Option<LoginUser>, sqlx::Error> {
+    sqlx::query_as::<_, LoginUser>(
+        r#"
+        SELECT
+            id,
+            password_hash,
+            email_verified_at IS NOT NULL
+                AS email_verified
+        FROM users
+        WHERE email = $1
+        "#,
+    )
+    .bind(email)
+    .fetch_optional(database)
+    .await
+}
+
+async fn verify_password(
+    password: String,
+    encoded_hash: String,
+) -> Result<bool, VerifyPasswordError> {
+    let verified = tokio::task::spawn_blocking(move || {
+        let parsed_hash = PasswordHash::new(&encoded_hash)?;
+
+        match Argon2::default().verify_password(password.as_bytes(), &parsed_hash) {
+            Ok(()) => Ok(true),
+            Err(PasswordHashError::Password) => Ok(false),
+            Err(error) => Err(error),
+        }
+    })
+    .await??;
+
+    Ok(verified)
+}
+
+async fn insert_session(
+    database: &PgPool,
+    user_id: Uuid,
+    token_hash: &[u8],
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        INSERT INTO sessions (
+        id,
+            user_id,
+            token_hash,
+            expires_at
+        )
+        VALUES (
+            $1,
+            $2,
+            $3,
+            now() + interval '7 days'
+        )
+        "#,
+    )
+    .bind(Uuid::now_v7())
+    .bind(user_id)
+    .bind(token_hash)
+    .execute(database)
+    .await?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
@@ -368,7 +514,7 @@ mod tests {
         password_hash::{PasswordHash, PasswordVerifier},
     };
 
-    use crate::auth::{decode_and_hash_token, generate_confirmation_token};
+    use crate::auth::{decode_and_hash_token, generate_opaque_token, verify_password};
 
     use super::{RegisterRequest, hash_password, validate_registration};
 
@@ -403,11 +549,22 @@ mod tests {
 
     #[test]
     fn confirmation_token_should_hash_to_stored_value() -> Result<()> {
-        let token = generate_confirmation_token();
+        let token = generate_opaque_token();
 
         let decoded_hash = decode_and_hash_token(&token.encoded)?;
 
         assert_eq!(decoded_hash, token.hash);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn password_verification_should_reject_wrong_password() -> Result<()> {
+        let encoded_hash = hash_password("correct password value".to_owned()).await?;
+
+        let verified = verify_password("wrong password value".to_owned(), encoded_hash).await?;
+
+        assert!(!verified);
 
         Ok(())
     }

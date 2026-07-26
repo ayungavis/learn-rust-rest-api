@@ -1,6 +1,10 @@
 use std::fmt::Debug;
 
-use axum::{Json, http::StatusCode, response::IntoResponse};
+use axum::{
+    Json,
+    http::{HeaderValue, StatusCode, header::WWW_AUTHENTICATE},
+    response::IntoResponse,
+};
 use serde::Serialize;
 use thiserror::Error;
 use tower_http::request_id::RequestId;
@@ -18,6 +22,10 @@ pub enum AppError {
     RequestTimeout { request_id: String },
     #[error("email confirmation token is invalid or expired")]
     InvalidConfirmationToken { request_id: String },
+    #[error("email or password is incorrect")]
+    InvalidCredentials { request_id: String },
+    #[error("email address is not verified")]
+    EmailNotVerified { request_id: String },
     #[error("internal server error")]
     Internal { request_id: String },
 }
@@ -63,6 +71,18 @@ impl AppError {
         }
     }
 
+    pub fn invalid_credentials(request_id: &RequestId) -> Self {
+        Self::InvalidCredentials {
+            request_id: request_id_value(request_id),
+        }
+    }
+
+    pub fn email_not_verified(request_id: &RequestId) -> Self {
+        Self::EmailNotVerified {
+            request_id: request_id_value(request_id),
+        }
+    }
+
     pub fn internal<E>(request_id: &RequestId, operation: &'static str, error: &E) -> Self
     where
         E: Debug + ?Sized,
@@ -77,6 +97,8 @@ impl AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> axum::response::Response {
+        let requires_authentication = matches!(&self, Self::InvalidCredentials { .. });
+
         let (status, code, message, request_id, details) = match self {
             Self::Validation {
                 request_id,
@@ -109,6 +131,20 @@ impl IntoResponse for AppError {
                 request_id,
                 None,
             ),
+            Self::InvalidCredentials { request_id } => (
+                StatusCode::UNAUTHORIZED,
+                "INVALID_CREDENTIALS",
+                "The email or password is incorrect",
+                request_id,
+                None,
+            ),
+            Self::EmailNotVerified { request_id } => (
+                StatusCode::FORBIDDEN,
+                "EMAIL_NOT_VERIFIED",
+                "Confirm your email before signing in",
+                request_id,
+                None,
+            ),
             Self::Internal { request_id } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "INTERNAL_ERROR",
@@ -117,7 +153,8 @@ impl IntoResponse for AppError {
                 None,
             ),
         };
-        (
+
+        let mut response = (
             status,
             Json(ErrorResponse {
                 code,
@@ -126,7 +163,15 @@ impl IntoResponse for AppError {
                 details,
             }),
         )
-            .into_response()
+            .into_response();
+
+        if requires_authentication {
+            response
+                .headers_mut()
+                .insert(WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
+        }
+
+        response
     }
 }
 
