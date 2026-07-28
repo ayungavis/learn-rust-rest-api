@@ -69,6 +69,36 @@ impl Mailer {
                 This link expires in 30 minutes."
             ))?;
 
+        self.send_message(message).await
+    }
+
+    /// Sends a password reset link to a registered user
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the recipient is invalid, the message cannot be
+    /// built, or the SMTP server rejects the message
+    pub async fn send_password_reset(&self, recipient: &str, token: &str) -> Result<(), MailError> {
+        let reset_url = format!(
+            "{}/reset-password?token={token}",
+            self.frontend_url.trim_end_matches("/")
+        );
+
+        let message = Message::builder()
+            .from(self.from.clone())
+            .to(recipient.parse::<Mailbox>()?)
+            .subject("Reset your password")
+            .body(format!(
+                "Reset your password by opening this link:\n\n
+                {reset_url}\n\n
+                This link expires in 30 minutes.\n\n
+                Ignore this email if you did not request it."
+            ))?;
+
+        self.send_message(message).await
+    }
+
+    async fn send_message(&self, message: Message) -> Result<(), MailError> {
         let mut attempt = 1_u8;
 
         loop {

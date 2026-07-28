@@ -64,6 +64,27 @@ pub struct LoginResponse {
     expires_in: u64,
 }
 
+#[derive(Deserialize)]
+pub struct ForgotPasswordRequest {
+    email: String,
+}
+
+#[derive(Serialize)]
+pub struct ForgotPasswordResponse {
+    message: &'static str,
+}
+
+#[derive(Deserialize)]
+pub struct ResetPasswordRequest {
+    token: String,
+    new_password: String,
+}
+
+#[derive(Serialize)]
+pub struct ResetPasswordResponse {
+    message: &'static str,
+}
+
 struct ValidatedRegistration {
     email: String,
     password: String,
@@ -89,7 +110,13 @@ pub struct AuthenticatedSession {
     id: Uuid,
 }
 
-struct PendingConfirmation {
+#[derive(FromRow)]
+struct PasswordResetUser {
+    id: Uuid,
+    email: String,
+}
+
+struct PendingEmailToken {
     email: String,
     token: String,
 }
@@ -244,6 +271,62 @@ pub async fn logout(
     Ok(StatusCode::NO_CONTENT)
 }
 
+pub async fn forgot_password(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    Json(input): Json<ForgotPasswordRequest>,
+) -> Result<(StatusCode, Json<ForgotPasswordResponse>), AppError> {
+    let email = input.email.trim().to_lowercase();
+
+    let pending_reset = create_password_reset(&state.database, &email)
+        .await
+        .map_err(|error| AppError::internal(&request_id, "create_password_reset", &error))?;
+
+    if let Some(reset) = pending_reset {
+        state
+            .mailer
+            .send_password_reset(&reset.email, &reset.token)
+            .await
+            .map_err(|error| AppError::internal(&request_id, "send_password_reset", &error))?;
+    }
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(ForgotPasswordResponse {
+            message: "If the account exists, password reset instructions will be sent to your email.",
+        }),
+    ))
+}
+
+pub async fn reset_password(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    Json(input): Json<ResetPasswordRequest>,
+) -> Result<Json<ResetPasswordResponse>, AppError> {
+    if let Some(error) = password_validation_error(&input.new_password) {
+        return Err(AppError::validation(&request_id, vec![error]));
+    }
+
+    let token_hash = decode_and_hash_token(&input.token)
+        .map_err(|_| AppError::invalid_password_reset_token(&request_id))?;
+
+    let password_hash = hash_password(input.new_password)
+        .await
+        .map_err(|error| AppError::internal(&request_id, "hash_password", &error))?;
+
+    let reset = consume_password_reset_token(&state.database, &token_hash, &password_hash)
+        .await
+        .map_err(|error| AppError::internal(&request_id, "consume_password_reset_token", &error))?;
+
+    if !reset {
+        return Err(AppError::invalid_password_reset_token(&request_id));
+    }
+
+    Ok(Json(ResetPasswordResponse {
+        message: "Password reset successfully",
+    }))
+}
+
 impl FromRequestParts<AppState> for AuthenticatedSession {
     type Rejection = AppError;
     async fn from_request_parts(
@@ -282,12 +365,8 @@ fn validate_registration(input: RegisterRequest) -> Result<ValidatedRegistration
         });
     }
 
-    let password_length = input.password.chars().count();
-    if !(15..=128).contains(&password_length) {
-        details.push(FieldError {
-            field: "password",
-            message: "Password must contain between 15 and 128 characters",
-        });
+    if let Some(error) = password_validation_error(&input.password) {
+        details.push(error);
     }
 
     if !(1..=100).contains(&display_name.chars().count()) {
@@ -346,7 +425,7 @@ async fn create_registration(
     email: &str,
     password_hash: &str,
     display_name: &str,
-) -> Result<Option<PendingConfirmation>, sqlx::Error> {
+) -> Result<Option<PendingEmailToken>, sqlx::Error> {
     let mut transaction = database.begin().await?;
 
     let user = sqlx::query_as::<_, RegistrationUser>(
@@ -419,7 +498,7 @@ async fn create_registration(
 
     transaction.commit().await?;
 
-    Ok(Some(PendingConfirmation {
+    Ok(Some(PendingEmailToken {
         email: user.email,
         token: token.encoded,
     }))
@@ -602,6 +681,146 @@ async fn revoke_session(database: &PgPool, session_id: Uuid) -> Result<(), sqlx:
     Ok(())
 }
 
+fn password_validation_error(password: &str) -> Option<FieldError> {
+    if (15..=128).contains(&password.chars().count()) {
+        return None;
+    }
+
+    Some(FieldError {
+        field: "password",
+        message: "Password must contain between 15 and 128 characters",
+    })
+}
+
+async fn create_password_reset(
+    database: &PgPool,
+    email: &str,
+) -> Result<Option<PendingEmailToken>, sqlx::Error> {
+    let mut transaction = database.begin().await?;
+
+    let user = sqlx::query_as::<_, PasswordResetUser>(
+        r#"
+        SELECT id, email
+        FROM users
+        WHERE email = $1
+            AND email_verified_at IS NOT NULL
+        FOR UPDATE
+        "#,
+    )
+    .bind(email)
+    .fetch_optional(&mut *transaction)
+    .await?;
+
+    let Some(user) = user else {
+        transaction.rollback().await?;
+        return Ok(None);
+    };
+
+    let token = generate_opaque_token();
+
+    sqlx::query(
+        r#"
+        UPDATE one_time_tokens
+        SET used_at = now()
+        WHERE user_id = $1
+            AND purpose = 'password_reset'
+            AND used_at IS NULL
+        "#,
+    )
+    .bind(user.id)
+    .execute(&mut *transaction)
+    .await?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO one_time_tokens (
+            id,
+            user_id,
+            purpose,
+            token_hash,
+            expires_at
+        )
+        VALUES (
+            $1,
+            $2,
+            'password_reset',
+            $3,
+            now() + interval '30 minutes'
+        )
+        "#,
+    )
+    .bind(Uuid::now_v7())
+    .bind(user.id)
+    .bind(&token.hash)
+    .execute(&mut *transaction)
+    .await?;
+
+    transaction.commit().await?;
+
+    Ok(Some(PendingEmailToken {
+        email: user.email,
+        token: token.encoded,
+    }))
+}
+
+async fn consume_password_reset_token(
+    database: &PgPool,
+    token_hash: &[u8],
+    password_hash: &str,
+) -> Result<bool, sqlx::Error> {
+    let mut transaction = database.begin().await?;
+
+    let user_id = sqlx::query_scalar::<_, Uuid>(
+        r#"
+        UPDATE one_time_tokens
+        SET used_at = now()
+        WHERE token_hash = $1
+            AND purpose = 'password_reset'
+            AND used_at IS NULL
+            AND expires_at > now()
+        RETURNING user_id
+        "#,
+    )
+    .bind(token_hash)
+    .fetch_optional(&mut *transaction)
+    .await?;
+
+    let Some(user_id) = user_id else {
+        transaction.rollback().await?;
+        return Ok(false);
+    };
+
+    sqlx::query(
+        r#"
+        UPDATE users
+        SET password_hash = $1,
+            updated_at = now()
+        WHERE id = $2
+        "#,
+    )
+    .bind(password_hash)
+    .bind(user_id)
+    .execute(&mut *transaction)
+    .await?;
+
+    sqlx::query(
+        r#"
+        UPDATE sessions
+        SET revoked_at =
+            COALESCE(revoked_at, now())
+        WHERE user_id = $1
+            AND revoked_at IS NULL
+        "#,
+    )
+    .bind(user_id)
+    .execute(&mut *transaction)
+    .await?;
+
+    transaction.commit().await?;
+
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
@@ -613,7 +832,10 @@ mod tests {
 
     use crate::auth::{decode_and_hash_token, generate_opaque_token, verify_password};
 
-    use super::{RegisterRequest, bearer_token, hash_password, validate_registration};
+    use super::{
+        RegisterRequest, bearer_token, hash_password, password_validation_error,
+        validate_registration,
+    };
 
     #[test]
     fn registration_validation_should_normalize_user_fields() -> Result<()> {
@@ -676,5 +898,10 @@ mod tests {
         );
 
         assert_eq!(bearer_token(&headers), Some("valid-token"))
+    }
+
+    #[test]
+    fn password_validation_should_reject_short_password() {
+        assert!(password_validation_error("too-short").is_some());
     }
 }

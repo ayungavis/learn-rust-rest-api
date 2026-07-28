@@ -28,6 +28,8 @@ pub enum AppError {
     EmailNotVerified { request_id: String },
     #[error("authentication is required")]
     AuthenticationRequired { request_id: String },
+    #[error("password reset token is invalid or expired")]
+    InvalidPasswordResetToken { request_id: String },
     #[error("internal server error")]
     Internal { request_id: String },
 }
@@ -96,6 +98,12 @@ impl AppError {
 
         Self::Internal {
             request_id: "missing-request-id".to_owned(),
+        }
+    }
+
+    pub fn invalid_password_reset_token(request_id: &RequestId) -> Self {
+        Self::InvalidPasswordResetToken {
+            request_id: request_id_value(request_id),
         }
     }
 
@@ -168,6 +176,13 @@ impl IntoResponse for AppError {
                 StatusCode::UNAUTHORIZED,
                 "AUTHENTICATION_REQUIRED",
                 "A valid Bearer token is required",
+                request_id,
+                None,
+            ),
+            Self::InvalidPasswordResetToken { request_id } => (
+                StatusCode::UNAUTHORIZED,
+                "INVALID_OR_EXPIRED_TOKEN",
+                "The password reset token is invalid or expired",
                 request_id,
                 None,
             ),
