@@ -108,6 +108,7 @@ struct LoginUser {
 #[derive(FromRow)]
 pub struct AuthenticatedSession {
     id: Uuid,
+    pub(crate) user_id: Uuid,
 }
 
 #[derive(FromRow)]
@@ -653,7 +654,7 @@ async fn find_active_session(
 ) -> Result<Option<AuthenticatedSession>, sqlx::Error> {
     sqlx::query_as::<_, AuthenticatedSession>(
         r#"
-        SELECT id
+        SELECT id, user_id
         FROM sessions
         WHERE token_hash = $1
             AND revoked_at IS NULL

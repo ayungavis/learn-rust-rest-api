@@ -3,7 +3,7 @@ use std::time::Duration;
 use axum::{
     BoxError, Extension, Router,
     error_handling::HandleErrorLayer,
-    routing::{get, post},
+    routing::{get, patch, post},
 };
 pub use mail::Mailer;
 pub use state::AppState;
@@ -18,12 +18,14 @@ use crate::{
     auth::{confirm_email, forgot_password, login, logout, register, reset_password},
     error::AppError,
     health::{live, ready},
+    profile::{get_profile, update_profile},
 };
 
 mod auth;
 mod error;
 mod health;
 pub mod mail;
+mod profile;
 mod state;
 
 pub fn build_router(state: AppState) -> Router {
@@ -48,6 +50,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/auth/forgot-password", post(forgot_password))
         .route("/api/v1/auth/reset-password", post(reset_password))
         .route("/api/v1/auth/confirm-email", post(confirm_email))
+        .route("/api/v1/profile", get(get_profile))
+        .route("/api/v1/profile", patch(update_profile))
         .fallback(route_not_found)
         .layer(middleware)
         .with_state(state)
