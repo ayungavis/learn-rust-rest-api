@@ -32,6 +32,8 @@ pub enum AppError {
     InvalidPasswordResetToken { request_id: String },
     #[error("current password is incorrect")]
     CurrentPasswordIncorrect { request_id: String },
+    #[error("product not found")]
+    ProductNotFound { request_id: String },
     #[error("internal server error")]
     Internal { request_id: String },
 }
@@ -111,6 +113,12 @@ impl AppError {
 
     pub fn current_password_incorrect(request_id: &RequestId) -> Self {
         Self::CurrentPasswordIncorrect {
+            request_id: request_id_value(request_id),
+        }
+    }
+
+    pub fn product_not_found(request_id: &RequestId) -> Self {
+        Self::ProductNotFound {
             request_id: request_id_value(request_id),
         }
     }
@@ -198,6 +206,13 @@ impl IntoResponse for AppError {
                 StatusCode::BAD_REQUEST,
                 "CURRENT_PASSWORD_INCORRECT",
                 "The current password is incorrect",
+                request_id,
+                None,
+            ),
+            Self::ProductNotFound { request_id } => (
+                StatusCode::NOT_FOUND,
+                "PRODUCT_NOT_FOUND",
+                "The requested product does not exist",
                 request_id,
                 None,
             ),

@@ -18,6 +18,7 @@ use crate::{
     auth::{confirm_email, forgot_password, login, logout, register, reset_password},
     error::AppError,
     health::{live, ready},
+    product::{create_product, delete_product, get_product, list_products, update_product},
     profile::{change_password, get_profile, update_profile},
 };
 
@@ -26,6 +27,7 @@ mod error;
 mod health;
 pub mod mail;
 mod password;
+mod product;
 mod profile;
 mod state;
 
@@ -53,6 +55,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/auth/confirm-email", post(confirm_email))
         .route("/api/v1/profile", get(get_profile).patch(update_profile))
         .route("/api/v1/profile/password", put(change_password))
+        .route("/api/v1/products", get(list_products).post(create_product))
+        .route(
+            "/api/v1/products/{product_id}",
+            get(get_product).put(update_product).delete(delete_product),
+        )
         .fallback(route_not_found)
         .layer(middleware)
         .with_state(state)
