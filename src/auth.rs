@@ -1,10 +1,4 @@
-use argon2::{
-    Argon2,
-    password_hash::{
-        Error as PasswordHashError, PasswordHash, PasswordHasher, PasswordVerifier, SaltString,
-        rand_core::{OsRng, RngCore},
-    },
-};
+use argon2::password_hash::rand_core::{OsRng, RngCore};
 use axum::{
     Extension, Json,
     extract::{FromRequestParts, State},
@@ -21,6 +15,10 @@ use uuid::Uuid;
 use crate::{
     AppState,
     error::{AppError, FieldError},
+    password::{
+        hash as hash_password, validation_error as password_validation_error,
+        verify as verify_password,
+    },
 };
 
 const SESSION_TTL_SECONDS: u64 = 7 * 24 * 60 * 60; // 7 days
@@ -128,27 +126,11 @@ struct OpaqueToken {
 }
 
 #[derive(Debug, Error)]
-enum HashPasswordError {
-    #[error("password hashing task failed")]
-    Task(#[from] tokio::task::JoinError),
-    #[error("Password hashing failed")]
-    Hash(#[from] argon2::password_hash::Error),
-}
-
-#[derive(Debug, Error)]
 enum DecodeTokenError {
     #[error("token encoding is invalid")]
     Encoding(#[from] base64::DecodeError),
     #[error("token length is invalid")]
     Length,
-}
-
-#[derive(Debug, Error)]
-enum VerifyPasswordError {
-    #[error("password verification task failed")]
-    Task(#[from] tokio::task::JoinError),
-    #[error("password verification failed")]
-    Verify(#[from] PasswordHashError),
 }
 
 pub async fn register(
@@ -409,18 +391,6 @@ fn is_valid_email(email: &str) -> bool {
         && !domain.contains('@')
 }
 
-async fn hash_password(password: String) -> Result<String, HashPasswordError> {
-    let password_hash = tokio::task::spawn_blocking(move || {
-        let salt = SaltString::generate(&mut OsRng);
-        Argon2::default()
-            .hash_password(password.as_bytes(), &salt)
-            .map(|hash| hash.to_string())
-    })
-    .await??;
-
-    Ok(password_hash)
-}
-
 async fn create_registration(
     database: &PgPool,
     email: &str,
@@ -585,24 +555,6 @@ async fn find_login_user(database: &PgPool, email: &str) -> Result<Option<LoginU
     .await
 }
 
-async fn verify_password(
-    password: String,
-    encoded_hash: String,
-) -> Result<bool, VerifyPasswordError> {
-    let verified = tokio::task::spawn_blocking(move || {
-        let parsed_hash = PasswordHash::new(&encoded_hash)?;
-
-        match Argon2::default().verify_password(password.as_bytes(), &parsed_hash) {
-            Ok(()) => Ok(true),
-            Err(PasswordHashError::Password) => Ok(false),
-            Err(error) => Err(error),
-        }
-    })
-    .await??;
-
-    Ok(verified)
-}
-
 async fn insert_session(
     database: &PgPool,
     user_id: Uuid,
@@ -680,17 +632,6 @@ async fn revoke_session(database: &PgPool, session_id: Uuid) -> Result<(), sqlx:
     .await?;
 
     Ok(())
-}
-
-fn password_validation_error(password: &str) -> Option<FieldError> {
-    if (15..=128).contains(&password.chars().count()) {
-        return None;
-    }
-
-    Some(FieldError {
-        field: "password",
-        message: "Password must contain between 15 and 128 characters",
-    })
 }
 
 async fn create_password_reset(
@@ -825,18 +766,11 @@ async fn consume_password_reset_token(
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
-    use argon2::{
-        Argon2,
-        password_hash::{PasswordHash, PasswordVerifier},
-    };
     use axum::http::{HeaderMap, HeaderValue, header::AUTHORIZATION};
 
-    use crate::auth::{decode_and_hash_token, generate_opaque_token, verify_password};
+    use crate::auth::{decode_and_hash_token, generate_opaque_token};
 
-    use super::{
-        RegisterRequest, bearer_token, hash_password, password_validation_error,
-        validate_registration,
-    };
+    use super::{RegisterRequest, bearer_token, validate_registration};
 
     #[test]
     fn registration_validation_should_normalize_user_fields() -> Result<()> {
@@ -855,18 +789,6 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn password_hash_should_verify_original_password() -> Result<()> {
-        let password = "correct horse battery staple".to_owned();
-        let encoded_hash = hash_password(password.to_owned()).await?;
-        let parsed_hash = PasswordHash::new(&encoded_hash)?;
-        let verification = Argon2::default().verify_password(password.as_bytes(), &parsed_hash);
-
-        assert!(verification.is_ok());
-
-        Ok(())
-    }
-
     #[test]
     fn confirmation_token_should_hash_to_stored_value() -> Result<()> {
         let token = generate_opaque_token();
@@ -874,17 +796,6 @@ mod tests {
         let decoded_hash = decode_and_hash_token(&token.encoded)?;
 
         assert_eq!(decoded_hash, token.hash);
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn password_verification_should_reject_wrong_password() -> Result<()> {
-        let encoded_hash = hash_password("correct password value".to_owned()).await?;
-
-        let verified = verify_password("wrong password value".to_owned(), encoded_hash).await?;
-
-        assert!(!verified);
 
         Ok(())
     }
@@ -899,10 +810,5 @@ mod tests {
         );
 
         assert_eq!(bearer_token(&headers), Some("valid-token"))
-    }
-
-    #[test]
-    fn password_validation_should_reject_short_password() {
-        assert!(password_validation_error("too-short").is_some());
     }
 }

@@ -30,6 +30,8 @@ pub enum AppError {
     AuthenticationRequired { request_id: String },
     #[error("password reset token is invalid or expired")]
     InvalidPasswordResetToken { request_id: String },
+    #[error("current password is incorrect")]
+    CurrentPasswordIncorrect { request_id: String },
     #[error("internal server error")]
     Internal { request_id: String },
 }
@@ -103,6 +105,12 @@ impl AppError {
 
     pub fn invalid_password_reset_token(request_id: &RequestId) -> Self {
         Self::InvalidPasswordResetToken {
+            request_id: request_id_value(request_id),
+        }
+    }
+
+    pub fn current_password_incorrect(request_id: &RequestId) -> Self {
+        Self::CurrentPasswordIncorrect {
             request_id: request_id_value(request_id),
         }
     }
@@ -183,6 +191,13 @@ impl IntoResponse for AppError {
                 StatusCode::UNAUTHORIZED,
                 "INVALID_OR_EXPIRED_TOKEN",
                 "The password reset token is invalid or expired",
+                request_id,
+                None,
+            ),
+            Self::CurrentPasswordIncorrect { request_id } => (
+                StatusCode::BAD_REQUEST,
+                "CURRENT_PASSWORD_INCORRECT",
+                "The current password is incorrect",
                 request_id,
                 None,
             ),
