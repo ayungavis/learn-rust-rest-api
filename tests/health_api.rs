@@ -3,7 +3,7 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
-use rust_catalog_api::{AppState, Mailer, build_router};
+use rust_catalog_api::{AppState, Mailer, ObjectStorage, build_router};
 use serde_json::{Value, json};
 use sqlx::postgres::PgPoolOptions;
 use tower::ServiceExt;
@@ -15,6 +15,7 @@ async fn live_should_return_ok() -> Result<()> {
     let app = build_router(AppState {
         database,
         mailer: test_mailer()?,
+        storage: test_storage().await?,
     });
     let response = app
         .oneshot(
@@ -44,6 +45,7 @@ async fn unknown_route_should_return_consistent_error() -> Result<()> {
     let app = build_router(AppState {
         database,
         mailer: test_mailer()?,
+        storage: test_storage().await?,
     });
     let response = app
         .oneshot(Request::builder().uri("/unknown").body(Body::empty())?)
@@ -74,4 +76,8 @@ fn test_mailer() -> Result<Mailer> {
         "Rust Catalog <noreply@example.com>",
         "http://localhost:5173".to_owned(),
     )?)
+}
+
+async fn test_storage() -> Result<ObjectStorage> {
+    Ok(ObjectStorage::new_test().await)
 }

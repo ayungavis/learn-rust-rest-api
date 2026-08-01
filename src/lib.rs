@@ -3,10 +3,12 @@ use std::time::Duration;
 use axum::{
     BoxError, Extension, Router,
     error_handling::HandleErrorLayer,
+    extract::DefaultBodyLimit,
     routing::{get, post, put},
 };
 pub use mail::Mailer;
 pub use state::AppState;
+pub use storage::ObjectStorage;
 use tower::{ServiceBuilder, timeout::TimeoutLayer};
 use tower_http::{
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
@@ -18,7 +20,10 @@ use crate::{
     auth::{confirm_email, forgot_password, login, logout, register, reset_password},
     error::AppError,
     health::{live, ready},
-    product::{create_product, delete_product, get_product, list_products, update_product},
+    product::{
+        create_product, delete_product, get_product, list_products, update_product,
+        upload_product_image,
+    },
     profile::{change_password, get_profile, update_profile},
 };
 
@@ -30,6 +35,7 @@ mod password;
 mod product;
 mod profile;
 mod state;
+mod storage;
 
 pub fn build_router(state: AppState) -> Router {
     let middleware = ServiceBuilder::new()
@@ -59,6 +65,10 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/v1/products/{product_id}",
             get(get_product).put(update_product).delete(delete_product),
+        )
+        .route(
+            "/api/v1/products/{product_id}/image",
+            put(upload_product_image).layer(DefaultBodyLimit::max(6 * 1024 * 1024)),
         )
         .fallback(route_not_found)
         .layer(middleware)

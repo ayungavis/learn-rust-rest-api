@@ -1,6 +1,10 @@
 use axum::{
     Extension, Json,
-    extract::{Path, Query, State},
+    body::Bytes,
+    extract::{
+        Multipart, Path, Query, State,
+        multipart::{MultipartError, MultipartRejection},
+    },
     http::StatusCode,
 };
 use serde::{Deserialize, Serialize};
@@ -16,6 +20,7 @@ use crate::{
 };
 
 const MAX_PRICE_CENTS: i64 = 1_000_000_000;
+const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024; // 5 MB
 
 #[derive(Deserialize)]
 pub struct ProductRequest {
@@ -31,6 +36,7 @@ pub struct ProductResponse {
     name: String,
     description: String,
     price_cents: i64,
+    image_url: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     created_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]
@@ -56,6 +62,27 @@ pub struct PaginationResponse {
     count: usize,
 }
 
+#[derive(Debug, thiserror::Error)]
+enum ImageInputError {
+    #[error("multipart body is invalid")]
+    Multipart(#[from] MultipartError),
+    #[error("image field is missing")]
+    MissingImage,
+    #[error("multipart field is not supported")]
+    UnexpectedField,
+    #[error("image field was provided more than once")]
+    DuplicateImage,
+    #[error("image exceeds the allowed size")]
+    TooLarge,
+    #[error("image format is unsupported")]
+    UnsupportedFormat,
+}
+
+struct ValidatedImage {
+    bytes: Bytes,
+    content_type: &'static str,
+}
+
 struct ValidatedProductRequest {
     name: String,
     description: String,
@@ -74,20 +101,47 @@ struct Product {
     name: String,
     description: String,
     price_cents: i64,
+    image_key: Option<String>,
     created_at: OffsetDateTime,
     updated_at: OffsetDateTime,
 }
 
-impl From<Product> for ProductResponse {
-    fn from(product: Product) -> Self {
+impl ProductResponse {
+    fn from_product(product: Product, state: &AppState) -> Self {
+        let image_url = product.image_key.as_deref().map(|key| {
+            state
+                .storage
+                .public_url(key, product.updated_at.unix_timestamp_nanos())
+        });
+
         Self {
             id: product.id.to_string(),
             owner_id: product.owner_id.to_string(),
             name: product.name,
             description: product.description,
             price_cents: product.price_cents,
+            image_url,
+
             created_at: product.created_at,
             updated_at: product.updated_at,
+        }
+    }
+}
+
+impl ImageInputError {
+    fn field_error(&self) -> FieldError {
+        let message = match self {
+            Self::Multipart(_) => "Multipart body is invalid or exceeds the allowed size",
+            Self::MissingImage => "Multipart field named image is required",
+            Self::UnexpectedField => "Only the image multipart field is accepted",
+            Self::DuplicateImage => "Only one image may be uploaded",
+            Self::TooLarge => "Image must not exceed 5 MB",
+            Self::UnsupportedFormat => "Image must be JPEG, PNG, or WEBP",
+        };
+
+        FieldError {
+            field: "image",
+            message,
         }
     }
 }
@@ -104,7 +158,10 @@ pub async fn list_products(
         .await
         .map_err(|error| AppError::internal(&request_id, "find_products", &error))?;
 
-    let data: Vec<ProductResponse> = products.into_iter().map(ProductResponse::from).collect();
+    let data: Vec<ProductResponse> = products
+        .into_iter()
+        .map(|product| ProductResponse::from_product(product, &state))
+        .collect();
 
     let count = data.len();
 
@@ -131,7 +188,7 @@ pub async fn get_product(
         .map_err(|error| AppError::internal(&request_id, "find_product", &error))?
         .ok_or_else(|| AppError::product_not_found(&request_id))?;
 
-    Ok(Json(product.into()))
+    Ok(Json(ProductResponse::from_product(product, &state)))
 }
 
 pub async fn create_product(
@@ -147,7 +204,10 @@ pub async fn create_product(
         .await
         .map_err(|error| AppError::internal(&request_id, "insert_product", &error))?;
 
-    Ok((StatusCode::CREATED, Json(product.into())))
+    Ok((
+        StatusCode::CREATED,
+        Json(ProductResponse::from_product(product, &state)),
+    ))
 }
 
 pub async fn update_product(
@@ -168,7 +228,7 @@ pub async fn update_product(
         .map_err(|error| AppError::internal(&request_id, "save_product", &error))?
         .ok_or_else(|| AppError::product_not_found(&request_id))?;
 
-    Ok(Json(product.into()))
+    Ok(Json(ProductResponse::from_product(product, &state)))
 }
 
 pub async fn delete_product(
@@ -189,6 +249,52 @@ pub async fn delete_product(
     }
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn upload_product_image(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    session: AuthenticatedSession,
+    Path(product_id): Path<String>,
+    multipart: Result<Multipart, MultipartRejection>,
+) -> Result<Json<ProductResponse>, AppError> {
+    let product_id = parse_product_id(&product_id)
+        .map_err(|error| AppError::validation(&request_id, vec![error]))?;
+
+    ensure_product_owner(&state.database, product_id, session.user_id)
+        .await
+        .map_err(|error| AppError::internal(&request_id, "ensure_product_owner", &error))?
+        .then_some(())
+        .ok_or_else(|| AppError::product_not_found(&request_id))?;
+
+    let multipart = multipart.map_err(|_| {
+        AppError::validation(
+            &request_id,
+            vec![FieldError {
+                field: "image",
+                message: "Request must contain valid multipart form data",
+            }],
+        )
+    })?;
+
+    let image = read_image(multipart)
+        .await
+        .map_err(|error| AppError::validation(&request_id, vec![error.field_error()]))?;
+
+    let object_key = format!("products/{product_id}/image");
+
+    state
+        .storage
+        .upload(&object_key, image.content_type, image.bytes)
+        .await
+        .map_err(|error| AppError::internal(&request_id, "upload_product_image", &error))?;
+
+    let product = save_product_image_key(&state.database, product_id, session.user_id, &object_key)
+        .await
+        .map_err(|error| AppError::internal(&request_id, "save_product_image_key", &error))?
+        .ok_or_else(|| AppError::product_not_found(&request_id))?;
+
+    Ok(Json(ProductResponse::from_product(product, &state)))
 }
 
 fn validate_product(input: ProductRequest) -> Result<ValidatedProductRequest, Vec<FieldError>> {
@@ -262,6 +368,52 @@ fn parse_product_id(product_id: &str) -> Result<Uuid, FieldError> {
     })
 }
 
+async fn read_image(mut multipart: Multipart) -> Result<ValidatedImage, ImageInputError> {
+    let mut image = None;
+
+    while let Some(field) = multipart.next_field().await? {
+        if field.name() != Some("image") {
+            return Err(ImageInputError::UnexpectedField);
+        }
+
+        if image.is_some() {
+            return Err(ImageInputError::DuplicateImage);
+        }
+
+        let bytes = field.bytes().await?;
+
+        if bytes.len() > MAX_IMAGE_BYTES {
+            return Err(ImageInputError::TooLarge);
+        }
+
+        let content_type =
+            detect_image_content_type(&bytes).ok_or(ImageInputError::UnsupportedFormat)?;
+
+        image = Some(ValidatedImage {
+            bytes,
+            content_type,
+        });
+    }
+
+    image.ok_or(ImageInputError::MissingImage)
+}
+
+fn detect_image_content_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        return Some("image/jpeg");
+    }
+
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]) {
+        return Some("image/png");
+    }
+
+    if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        return Some("image/webp");
+    }
+
+    None
+}
+
 async fn find_products(
     database: &PgPool,
     limit: i64,
@@ -275,6 +427,7 @@ async fn find_products(
             name,
             description,
             price_cents,
+            image_key,
             created_at,
             updated_at
         FROM products
@@ -298,6 +451,7 @@ async fn find_product(database: &PgPool, product_id: Uuid) -> Result<Option<Prod
             name,
             description,
             price_cents,
+            image_key,
             created_at,
             updated_at
         FROM products
@@ -330,6 +484,7 @@ async fn insert_product(
             name,
             description,
             price_cents,
+            image_key,
             created_at,
             updated_at
         "#,
@@ -364,6 +519,7 @@ async fn save_product(
             name,
             description,
             price_cents,
+            image_key,
             created_at,
             updated_at
         "#,
@@ -397,12 +553,65 @@ async fn remove_product(
     Ok(result.rows_affected() == 1)
 }
 
+async fn ensure_product_owner(
+    database: &PgPool,
+    product_id: Uuid,
+    owner_id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        r#"
+        SELECT EXISTS (
+            SELECT 1
+            FROM products
+            WHERE id = $1
+                AND owner_id = $2
+        )
+        "#,
+    )
+    .bind(product_id)
+    .bind(owner_id)
+    .fetch_one(database)
+    .await
+}
+
+async fn save_product_image_key(
+    database: &PgPool,
+    product_id: Uuid,
+    owner_id: Uuid,
+    image_key: &str,
+) -> Result<Option<Product>, sqlx::Error> {
+    sqlx::query_as::<_, Product>(
+        r#"
+        UPDATE products
+        SET image_key = $1,
+            updated_at = now()
+        WHERE id = $2
+            AND owner_id = $3
+        RETURNING
+            id,
+            owner_id,
+            name,
+            description,
+            price_cents,
+            image_key,
+            created_at,
+            updated_at
+        "#,
+    )
+    .bind(image_key)
+    .bind(product_id)
+    .bind(owner_id)
+    .fetch_optional(database)
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
 
     use super::{
-        ListProductsQuery, ProductRequest, parse_product_id, validate_pagination, validate_product,
+        ListProductsQuery, ProductRequest, detect_image_content_type, parse_product_id,
+        validate_pagination, validate_product,
     };
 
     #[test]
@@ -445,5 +654,17 @@ mod tests {
         let result = parse_product_id("invalid-id");
 
         assert!(result.is_err())
+    }
+
+    #[test]
+    fn detect_image_content_type_should_accept_png_signature() {
+        let bytes = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+
+        assert_eq!(detect_image_content_type(&bytes), Some("image/png"),);
+    }
+
+    #[test]
+    fn detect_image_content_type_should_reject_untrusted_bytes() {
+        assert_eq!(detect_image_content_type(b"<script>"), None,);
     }
 }

@@ -6,7 +6,13 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.104"
 argon2 = { version = "0.5.3", features = ["std"] }
-axum = "0.8.9"
+aws-config = { version = "1.10.1", default-features = false, features = ["rt-tokio", "rustls"] }
+aws-sdk-s3 = { version = "1.140.0", default-features = false, features = [
+  "default-https-client",
+  "rt-tokio",
+  "rustls",
+] }
+axum = { version = "0.8.9", features = ["multipart"] }
 base64 = "0.23.0"
 dotenvy = "0.15.7"
 lettre = { version = "0.11.22", default-features = false, features = [
