@@ -43,6 +43,8 @@ tower = { version = "0.5.3", features = ["timeout", "util"] }
 tower-http = { version = "0.7.0", features = ["request-id", "trace"] }
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
+utoipa = { version = "5.5.0", features = ["time", "uuid"] }
+utoipa-swagger-ui = { version = "9.0.2", default-features = false, features = ["axum", "vendored"] }
 uuid = { version = "1.24.0", features = ["v7"] }
 
 [dev-dependencies]

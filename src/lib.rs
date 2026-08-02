@@ -16,8 +16,11 @@ use tower_http::{
     trace::{DefaultMakeSpan, DefaultOnRequest, DefaultOnResponse, TraceLayer},
 };
 use tracing::Level;
+use utoipa::OpenApi;
+use utoipa_swagger_ui::SwaggerUi;
 
 use crate::{
+    api_doc::ApiDoc,
     auth::{confirm_email, forgot_password, login, logout, register, reset_password},
     error::AppError,
     health::{live, ready},
@@ -28,6 +31,7 @@ use crate::{
     profile::{change_password, get_profile, update_profile},
 };
 
+mod api_doc;
 mod auth;
 mod error;
 mod health;
@@ -72,6 +76,7 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/products/{product_id}/image",
             put(upload_product_image).layer(DefaultBodyLimit::max(6 * 1024 * 1024)),
         )
+        .merge(SwaggerUi::new("/docs").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .fallback(route_not_found)
         .layer(middleware)
         .with_state(state)
