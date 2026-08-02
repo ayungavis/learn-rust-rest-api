@@ -3,9 +3,10 @@ mod config;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use rust_catalog_api::{AppState, Mailer, ObjectStorage, build_router};
+use rust_catalog_api::{AppState, Mailer, ObjectStorage, build_router, run_object_cleanup_worker};
 use sqlx::postgres::PgPoolOptions;
 use tokio::net::TcpListener;
+use tokio_util::sync::CancellationToken;
 
 use crate::config::Config;
 
@@ -42,13 +43,48 @@ async fn main() -> Result<()> {
         storage,
     };
 
+    let cancellation = CancellationToken::new();
+
+    let cleanup_worker = tokio::spawn(run_object_cleanup_worker(
+        state.database.clone(),
+        state.storage.clone(),
+        cancellation.child_token(),
+    ));
+
     let app = build_router(state);
     let listener = TcpListener::bind(config.address)
         .await
         .with_context(|| format!("failed to bind HTTP listener to {}", config.address))?;
 
     tracing::info!(address = %config.address, "API listening");
-    axum::serve(listener, app).await?;
+
+    let server_cancellation = cancellation.clone();
+
+    let server_result = axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            match tokio::signal::ctrl_c().await {
+                Ok(()) => {
+                    tracing::info!("shutdown signal received")
+                }
+                Err(error) => {
+                    tracing::error!(
+                        error = ?error,
+                        "failed to listen for shutdown signal"
+                    )
+                }
+            }
+
+            server_cancellation.cancel();
+        })
+        .await;
+
+    cancellation.cancel();
+
+    cleanup_worker
+        .await
+        .context("object cleanup worker task failed")?;
+
+    server_result.context("HTPP server failed")?;
 
     Ok(())
 }

@@ -7,6 +7,7 @@ use axum::{
     routing::{get, post, put},
 };
 pub use mail::Mailer;
+pub use object_cleanup::run_object_cleanup_worker;
 pub use state::AppState;
 pub use storage::ObjectStorage;
 use tower::{ServiceBuilder, timeout::TimeoutLayer};
@@ -31,6 +32,7 @@ mod auth;
 mod error;
 mod health;
 pub mod mail;
+mod object_cleanup;
 mod password;
 mod product;
 mod profile;

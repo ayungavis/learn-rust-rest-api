@@ -5,7 +5,7 @@ use aws_sdk_s3::{
     Client,
     config::{Credentials, SharedCredentialsProvider},
     error::SdkError,
-    operation::put_object::PutObjectError,
+    operation::{delete_object::DeleteObjectError, put_object::PutObjectError},
     primitives::ByteStream,
 };
 use axum::body::Bytes;
@@ -39,6 +39,8 @@ pub enum ObjectStorageInitError {
 pub enum ObjectStorageError {
     #[error("R2 put object request failed")]
     PutObject(#[from] SdkError<PutObjectError>),
+    #[error("R2 delete object request failed")]
+    DeleteObject(#[from] SdkError<DeleteObjectError>),
 }
 
 impl ObjectStorage {
@@ -106,6 +108,30 @@ impl ObjectStorage {
                     max_attemps = R2_MAX_ATTEMPTS,
                         "R2 upload failed after SDK retries"
                 );
+            })?;
+
+        Ok(())
+    }
+
+    /// Deletes an object from R2
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after the configured SDK retries are exhausted
+    pub async fn delete(&self, key: &str) -> Result<(), ObjectStorageError> {
+        self.client
+            .delete_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await
+            .inspect_err(|error| {
+                tracing::warn!(
+                    key,
+                    error = ?error,
+                    max_attempts = R2_MAX_ATTEMPTS,
+                    "R2 deletion failed after SDK retries"
+                )
             })?;
 
         Ok(())

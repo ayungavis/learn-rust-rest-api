@@ -106,6 +106,11 @@ struct Product {
     updated_at: OffsetDateTime,
 }
 
+#[derive(FromRow)]
+struct DeletedProduct {
+    image_key: Option<String>,
+}
+
 impl ProductResponse {
     fn from_product(product: Product, state: &AppState) -> Self {
         let image_url = product.image_key.as_deref().map(|key| {
@@ -240,9 +245,16 @@ pub async fn delete_product(
     let product_id = parse_product_id(&product_id)
         .map_err(|error| AppError::validation(&request_id, vec![error]))?;
 
-    let deleted = remove_product(&state.database, product_id, session.user_id)
-        .await
-        .map_err(|error| AppError::internal(&request_id, "remove_product", &error))?;
+    let deleted =
+        delete_product_and_schedule_image_cleanup(&state.database, product_id, session.user_id)
+            .await
+            .map_err(|error| {
+                AppError::internal(
+                    &request_id,
+                    "delete_product_and_schedule_image_cleanup",
+                    &error,
+                )
+            })?;
 
     if !deleted {
         return Err(AppError::product_not_found(&request_id));
@@ -533,24 +545,48 @@ async fn save_product(
     .await
 }
 
-async fn remove_product(
+async fn delete_product_and_schedule_image_cleanup(
     database: &PgPool,
     product_id: Uuid,
     owner_id: Uuid,
 ) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query(
+    let mut transaction = database.begin().await?;
+
+    let deleted = sqlx::query_as::<_, DeletedProduct>(
         r#"
         DELETE FROM products
         WHERE id = $1
             AND owner_id = $2
+        RETURNING image_key
         "#,
     )
     .bind(product_id)
     .bind(owner_id)
-    .execute(database)
+    .fetch_optional(&mut *transaction)
     .await?;
 
-    Ok(result.rows_affected() == 1)
+    let Some(deleted) = deleted else {
+        transaction.rollback().await?;
+        return Ok(false);
+    };
+
+    if let Some(image_key) = deleted.image_key {
+        sqlx::query(
+            r#"
+            INSERT INTO object_deletion_jobs (id, object_key)
+            VALUES ($1, $2)
+            ON CONFLICT (object_key) DO NOTHING
+            "#,
+        )
+        .bind(Uuid::now_v7())
+        .bind(image_key)
+        .execute(&mut *transaction)
+        .await?;
+    }
+
+    transaction.commit().await?;
+
+    Ok(true)
 }
 
 async fn ensure_product_owner(
