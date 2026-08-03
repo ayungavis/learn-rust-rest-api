@@ -8,6 +8,7 @@ use axum::{
 use serde::Serialize;
 use thiserror::Error;
 use tower_http::request_id::RequestId;
+use utoipa::ToSchema;
 
 #[derive(Debug, Error)]
 pub enum AppError {
@@ -38,14 +39,14 @@ pub enum AppError {
     Internal { request_id: String },
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct FieldError {
     pub field: &'static str,
     pub message: &'static str,
 }
 
-#[derive(Serialize)]
-struct ErrorResponse {
+#[derive(Serialize, ToSchema)]
+pub struct ErrorResponse {
     code: &'static str,
     message: &'static str,
     request_id: String,

@@ -10,11 +10,12 @@ use sha2::{Digest, Sha256};
 use sqlx::{PgPool, prelude::FromRow};
 use thiserror::Error;
 use tower_http::request_id::RequestId;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::{
     AppState,
-    error::{AppError, FieldError},
+    error::{AppError, ErrorResponse, FieldError},
     password::{
         hash as hash_password, validation_error as password_validation_error,
         verify as verify_password,
@@ -27,58 +28,58 @@ const DUMMY_PASSWORD_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$Awsq1081k1ZMw1
 
 const TOKEN_BYTES: usize = 32;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct RegisterRequest {
     email: String,
     password: String,
     display_name: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct RegisterResponse {
     message: &'static str,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct ConfirmEmailRequest {
     token: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct ConfirmEmailResponse {
     message: &'static str,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct LoginRequest {
     email: String,
     password: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct LoginResponse {
     access_token: String,
     token_type: &'static str,
     expires_in: u64,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct ForgotPasswordRequest {
     email: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct ForgotPasswordResponse {
     message: &'static str,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct ResetPasswordRequest {
     token: String,
     new_password: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct ResetPasswordResponse {
     message: &'static str,
 }
@@ -133,6 +134,17 @@ enum DecodeTokenError {
     Length,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/register",
+    tag = "Authentication",
+    request_body = RegisterRequest,
+    responses(
+        ( status = StatusCode::ACCEPTED, description = "Account created; email confirmation is required", body = RegisterResponse ),
+        ( status = StatusCode::BAD_REQUEST, description = "Request validation failed", body = ErrorResponse ),
+        ( status = StatusCode::INTERNAL_SERVER_ERROR, description = "Registration request could not be processed", body = ErrorResponse )
+    )
+)]
 pub async fn register(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
@@ -172,6 +184,17 @@ pub async fn register(
     ))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/confirm-email",
+    tag = "Authentication",
+    request_body = ConfirmEmailRequest,
+    responses(
+        ( status = StatusCode::OK, description = "Email address confirmed", body = ConfirmEmailResponse ),
+        ( status = StatusCode::BAD_REQUEST, description = "Confirmation token is invalid or expired", body = ErrorResponse ),
+        ( status = StatusCode::INTERNAL_SERVER_ERROR, description = "Email confirmation could not be processed", body = ErrorResponse)
+    )
+)]
 pub async fn confirm_email(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
@@ -193,6 +216,18 @@ pub async fn confirm_email(
     }))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/login",
+    tag = "Authentication",
+    request_body = LoginRequest,
+    responses(
+        ( status = StatusCode::OK, description = "Authentication successful", body = LoginResponse ),
+        ( status = StatusCode::UNAUTHORIZED, description = "Email or password is incorrect", body = ErrorResponse ),
+        ( status = StatusCode::FORBIDDEN, description = "Email address has not been confirmed", body = ErrorResponse ),
+        ( status = StatusCode::INTERNAL_SERVER_ERROR, description = "Authentication could not be processed", body = ErrorResponse )
+    )
+)]
 pub async fn login(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
@@ -242,6 +277,19 @@ pub async fn login(
     }))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/logout",
+    tag = "Authentication",
+    security(
+        ("bearer_auth" = [])
+    ),
+    responses(
+        ( status = StatusCode::NO_CONTENT, description = "Current session revoked" ),
+        ( status = StatusCode::UNAUTHORIZED, description = "Bearer token is missing, invalid, or expired", body = ErrorResponse ),
+        ( status = StatusCode::INTERNAL_SERVER_ERROR, description = "Session could not be revoked", body = ErrorResponse ),
+    )
+)]
 pub async fn logout(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
@@ -254,6 +302,16 @@ pub async fn logout(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/forgot-password",
+    tag = "Authentication",
+    request_body = ForgotPasswordRequest,
+    responses(
+        ( status = StatusCode::ACCEPTED, description = "Password reset request accepted", body = ForgotPasswordResponse ),
+        ( status = StatusCode::INTERNAL_SERVER_ERROR, description = "Password reset request could not be processed", body = ErrorResponse )
+    )
+)]
 pub async fn forgot_password(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
@@ -281,6 +339,18 @@ pub async fn forgot_password(
     ))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/reset-password",
+    tag = "Authentication",
+    request_body = ResetPasswordRequest,
+    responses(
+        ( status = StatusCode::OK, description = "Password reset successfully", body = ResetPasswordResponse ),
+        ( status = StatusCode::BAD_REQUEST, description = "New password did not pass validation", body = ErrorResponse ),
+        ( status = StatusCode::UNAUTHORIZED, description = "Password reset token is invalid or expired", body = ErrorResponse ),
+        ( status = StatusCode::INTERNAL_SERVER_ERROR, description = "Password reset could not be processed", body = ErrorResponse )
+    )
+)]
 pub async fn reset_password(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,

@@ -6,7 +6,15 @@ use utoipa::{
     },
 };
 
-use crate::health::HealthResponse;
+use crate::{
+    auth::{
+        ConfirmEmailRequest, ConfirmEmailResponse, ForgotPasswordRequest, ForgotPasswordResponse,
+        LoginRequest, LoginResponse, RegisterRequest, RegisterResponse, ResetPasswordRequest,
+        ResetPasswordResponse,
+    },
+    error::ErrorResponse,
+    health::HealthResponse,
+};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -16,17 +24,40 @@ use crate::health::HealthResponse;
     ),
     paths(
         crate::health::live,
-        crate::health::ready
+        crate::health::ready,
+        crate::auth::register,
+        crate::auth::confirm_email,
+        crate::auth::login,
+        crate::auth::logout,
+        crate::auth::forgot_password,
+        crate::auth::reset_password,
     ),
     components(
-        schemas(HealthResponse)
+        schemas(
+            HealthResponse,
+            ErrorResponse,
+            RegisterRequest,
+            RegisterResponse,
+            ConfirmEmailRequest,
+            ConfirmEmailResponse,
+            LoginRequest,
+            LoginResponse,
+            ForgotPasswordRequest,
+            ForgotPasswordResponse,
+            ResetPasswordRequest,
+            ResetPasswordResponse,
+        )
     ),
     modifiers(&SecurityAddon),
     tags(
         (
             name = "Health",
             description = "Application health and readiness endpoints"
-        )
+        ),
+        (
+            name = "Authentication",
+            description = "Registration, sessions, email confirmation, and password recovery"
+        ),
     )
 )]
 pub(crate) struct ApiDoc;
@@ -62,6 +93,25 @@ mod tests {
                 .paths
                 .paths
                 .contains_key("/api/v1/health/live")
+        )
+    }
+
+    #[test]
+    fn openapi_should_include_authentication_paths() {
+        let document = ApiDoc::openapi();
+        let paths = &document.paths.paths;
+        let authentication_paths = [
+            "/api/v1/auth/register",
+            "/api/v1/auth/login",
+            "/api/v1/auth/confirm-email",
+            "/api/v1/auth/forgot-password",
+            "/api/v1/auth/reset-password",
+        ];
+
+        assert!(
+            authentication_paths
+                .iter()
+                .all(|path| paths.contains_key(*path))
         )
     }
 }
