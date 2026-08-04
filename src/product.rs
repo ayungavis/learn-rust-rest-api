@@ -11,25 +11,26 @@ use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, prelude::FromRow};
 use time::OffsetDateTime;
 use tower_http::request_id::RequestId;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::{
     AppState,
     auth::AuthenticatedSession,
-    error::{AppError, FieldError},
+    error::{AppError, ErrorResponse, FieldError},
 };
 
 const MAX_PRICE_CENTS: i64 = 1_000_000_000;
 const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024; // 5 MB
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct ProductRequest {
     name: String,
     description: String,
     price_cents: i64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct ProductResponse {
     id: String,
     owner_id: String,
@@ -43,23 +44,34 @@ pub struct ProductResponse {
     updated_at: OffsetDateTime,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct ListProductsQuery {
     limit: i64,
     offset: i64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct ListProductsResponse {
     data: Vec<ProductResponse>,
     pagination: PaginationResponse,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct PaginationResponse {
     limit: i64,
     offset: i64,
     count: usize,
+}
+
+#[derive(ToSchema)]
+pub struct ProductImageUpload {
+    /// JPEG, PNG, or WebP image with a maximum size of 5 MB
+    #[schema(content_media_type = "application/octet-stream")]
+    #[expect(
+        dead_code,
+        reason = "Used only to generate the multipart OpenAPI schema"
+    )]
+    pub image: Vec<u8>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -151,6 +163,20 @@ impl ImageInputError {
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/products",
+    tag = "Products",
+    params(
+        ("limit" = i64, Query, description = "Required. Number of products between 1 and 100"),
+        ("offset" = i64, Query, description = "Required. Number of products to skip; zero or greater")
+    ),
+    responses(
+        ( status = StatusCode::OK, description = "Paginated products list", body = ListProductsResponse),
+        ( status = StatusCode::BAD_REQUEST, description = "Pagination parameters are invalid", body = ErrorResponse ),
+        ( status = StatusCode::INTERNAL_SERVER_ERROR, description = "Products could not be loaded", body = ErrorResponse )
+    )
+)]
 pub async fn list_products(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
@@ -180,6 +206,20 @@ pub async fn list_products(
     }))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/products/{product_id}",
+    tag = "Products",
+    params(
+        ("product_id" = String, Path, description = "Product UUID")
+    ),
+    responses(
+        ( status = StatusCode::OK, description = "Product found", body = ProductResponse ),
+        ( status = StatusCode::BAD_REQUEST, description = "Product ID is invalid", body = ErrorResponse ),
+        ( status = StatusCode::NOT_FOUND, description = "Product was not found", body = ErrorResponse ),
+        ( status = StatusCode::INTERNAL_SERVER_ERROR, description = "Product could not be loaded", body = ErrorResponse )
+    )
+)]
 pub async fn get_product(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
@@ -196,6 +236,21 @@ pub async fn get_product(
     Ok(Json(ProductResponse::from_product(product, &state)))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/products",
+    tag = "Products",
+    security(
+       ("bearer_auth" = [])
+    ),
+    request_body = ProductRequest,
+    responses(
+        ( status = StatusCode::CREATED, description = "Product created", body = ProductResponse ),
+        ( status = StatusCode::BAD_REQUEST, description = "Product data did not pass validation", body = ErrorResponse ),
+        ( status = StatusCode::UNAUTHORIZED, description = "Bearer token is missing, invalid, or expired", body = ErrorResponse ),
+        ( status = StatusCode::INTERNAL_SERVER_ERROR, description = "Product could not be created", body = ErrorResponse )
+    )
+)]
 pub async fn create_product(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
@@ -215,6 +270,25 @@ pub async fn create_product(
     ))
 }
 
+#[utoipa::path(
+    put,
+    path = "/api/v1/products/{product_id}",
+    tag = "Products",
+    security(
+        ("bearer_auth" = [])
+    ),
+    params(
+        ("product_id" = Uuid, Path, description = "Product UUID")
+    ),
+    request_body = ProductRequest,
+    responses(
+        ( status = StatusCode::OK, description = "Product updated", body = ProductResponse ),
+        ( status = StatusCode::BAD_REQUEST, description = "Product ID or request data is invalid", body = ErrorResponse ),
+        ( status = StatusCode::UNAUTHORIZED, description = "Bearer token is missing, invalid, or expired", body = ErrorResponse ),
+        ( status = StatusCode::NOT_FOUND, description = "Product was not found or is not owned by the current user", body = ErrorResponse ),
+        ( status = StatusCode::INTERNAL_SERVER_ERROR, description = "Product could not be updated", body = ErrorResponse )
+    )
+)]
 pub async fn update_product(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
@@ -236,6 +310,24 @@ pub async fn update_product(
     Ok(Json(ProductResponse::from_product(product, &state)))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/v1/products/{product_id}",
+    tag = "Products",
+    security(
+        ("bearer_auth" = [])
+    ),
+    params(
+        ("product_id" = Uuid, Path, description = "Product UUID")
+    ),
+    responses(
+        ( status = StatusCode::NO_CONTENT, description = "Product deleted" ),
+        ( status = StatusCode::BAD_REQUEST, description = "Product ID is invalid", body = ErrorResponse ),
+        ( status = StatusCode::UNAUTHORIZED, description = "Bearer token is missing, invalid, or expired", body = ErrorResponse ),
+        ( status = StatusCode::NOT_FOUND, description = "Product was not found or is not owned by the current user", body = ErrorResponse ),
+        ( status = StatusCode::INTERNAL_SERVER_ERROR, description = "Product could not be deleted", body = ErrorResponse )
+    )
+)]
 pub async fn delete_product(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
@@ -263,6 +355,29 @@ pub async fn delete_product(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(
+    put,
+    path = "/api/v1/products/{product_id}/image",
+    tag = "Products",
+    security(
+        ("bearer_auth" = [])
+    ),
+    params(
+        ("product_id" = Uuid, Path, description = "Product UUID")
+    ),
+    request_body(
+        content = inline(ProductImageUpload),
+        content_type = "multipart/form-data",
+        description = "Multipart form containing one image field. JPEG, PNG, or WebP; maximum 5 MB"
+    ),
+    responses(
+        ( status = StatusCode::OK, description = "Product image uploaded", body = ProductResponse ),
+        ( status = StatusCode::BAD_REQUEST, description = "Image or multipart request is invalid", body = ErrorResponse ),
+        ( status = StatusCode::UNAUTHORIZED, description = "Bearer token is missing, invalid, or expired", body = ErrorResponse ),
+        ( status = StatusCode::NOT_FOUND, description = "Product was not found or is not owned by the current user", body = ErrorResponse ),
+        ( status = StatusCode::INTERNAL_SERVER_ERROR, description = "Product image could not be uploaded", body = ErrorResponse )
+    )
+)]
 pub async fn upload_product_image(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,

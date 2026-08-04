@@ -14,6 +14,10 @@ use crate::{
     },
     error::ErrorResponse,
     health::HealthResponse,
+    product::{ListProductsResponse, PaginationResponse, ProductRequest, ProductResponse},
+    profile::{
+        ChangePasswordRequest, ChangePasswordResponse, ProfileResponse, UpdateProfileRequest,
+    },
 };
 
 #[derive(OpenApi)]
@@ -23,19 +27,36 @@ use crate::{
         description = "REST API for authentication, profiles, and product management"
     ),
     paths(
+        // Health
         crate::health::live,
         crate::health::ready,
+        // Authentication
         crate::auth::register,
         crate::auth::confirm_email,
         crate::auth::login,
         crate::auth::logout,
         crate::auth::forgot_password,
         crate::auth::reset_password,
+        // Profile
+        crate::profile::get_profile,
+        crate::profile::update_profile,
+        crate::profile::change_password,
+        // Products
+        crate::product::list_products,
+        crate::product::get_product,
+        crate::product::create_product,
+        crate::product::update_product,
+        crate::product::delete_product,
+        crate::product::upload_product_image
     ),
     components(
         schemas(
-            HealthResponse,
+            // Common
             ErrorResponse,
+            PaginationResponse,
+            // Health
+            HealthResponse,
+            // Authentication
             RegisterRequest,
             RegisterResponse,
             ConfirmEmailRequest,
@@ -46,6 +67,15 @@ use crate::{
             ForgotPasswordResponse,
             ResetPasswordRequest,
             ResetPasswordResponse,
+            // Profile
+            ProfileResponse,
+            UpdateProfileRequest,
+            ChangePasswordRequest,
+            ChangePasswordResponse,
+            // Products
+            ProductRequest,
+            ProductResponse,
+            ListProductsResponse,
         )
     ),
     modifiers(&SecurityAddon),
@@ -57,6 +87,14 @@ use crate::{
         (
             name = "Authentication",
             description = "Registration, sessions, email confirmation, and password recovery"
+        ),
+        (
+            name = "Profile",
+            description = "Current user profile and password management"
+        ),
+        (
+            name = "Products",
+            description = "Public product catalog and authenticated product management"
         ),
     )
 )]
@@ -103,6 +141,7 @@ mod tests {
         let authentication_paths = [
             "/api/v1/auth/register",
             "/api/v1/auth/login",
+            "/api/v1/auth/logout",
             "/api/v1/auth/confirm-email",
             "/api/v1/auth/forgot-password",
             "/api/v1/auth/reset-password",
@@ -113,5 +152,27 @@ mod tests {
                 .iter()
                 .all(|path| paths.contains_key(*path))
         )
+    }
+
+    #[test]
+    fn openapi_should_include_profile_paths() {
+        let document = ApiDoc::openapi();
+        let paths = &document.paths.paths;
+        let profile_paths = ["/api/v1/profile", "/api/v1/profile/password"];
+
+        assert!(profile_paths.iter().all(|path| paths.contains_key(*path)))
+    }
+
+    #[test]
+    fn openapi_should_include_product_paths() {
+        let document = ApiDoc::openapi();
+        let paths = &document.paths.paths;
+        let product_paths = [
+            "/api/v1/products",
+            "/api/v1/products/{product_id}",
+            "/api/v1/products/{product_id}/image",
+        ];
+
+        assert!(product_paths.iter().all(|path| paths.contains_key(*path)))
     }
 }

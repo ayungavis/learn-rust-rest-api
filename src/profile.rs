@@ -2,24 +2,25 @@ use axum::{Extension, Json, extract::State};
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, prelude::FromRow};
 use tower_http::request_id::RequestId;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::{
     AppState,
     auth::AuthenticatedSession,
-    error::{AppError, FieldError},
+    error::{AppError, ErrorResponse, FieldError},
     password::{
         hash as hash_password, validation_error as password_validation_error,
         verify as verify_password,
     },
 };
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct UpdateProfileRequest {
     display_name: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct ProfileResponse {
     id: String,
     email: String,
@@ -27,13 +28,13 @@ pub struct ProfileResponse {
     email_verified: bool,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct ChangePasswordRequest {
     current_password: String,
     new_password: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct ChangePasswordResponse {
     message: &'static str,
 }
@@ -57,6 +58,19 @@ impl From<Profile> for ProfileResponse {
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/profile",
+    tag = "Profile",
+    security(
+        ("bearer_auth" = [])
+    ),
+    responses(
+        ( status = StatusCode::OK, description = "Current user profile", body = ProfileResponse),
+        ( status = StatusCode::UNAUTHORIZED, description = "Bearer token is missing, invalid, or expired", body = ErrorResponse ),
+        ( status = StatusCode::INTERNAL_SERVER_ERROR, description = "Profile could not be loaded", body = ErrorResponse )
+    )
+)]
 pub async fn get_profile(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
@@ -69,6 +83,21 @@ pub async fn get_profile(
     Ok(Json(profile.into()))
 }
 
+#[utoipa::path(
+    patch,
+    path = "/api/v1/profile",
+    tag = "Profile",
+    security(
+        ("bearer_auth" = [])
+    ),
+    request_body = UpdateProfileRequest,
+    responses(
+        ( status = StatusCode::OK, description = "Profile updated successfully", body = ProfileResponse ),
+        ( status = StatusCode::BAD_REQUEST, description = "Display name did not pass validation", body = ErrorResponse ),
+        ( status = StatusCode::UNAUTHORIZED, description = "Bearer token is missing, invalid, or expired", body = ErrorResponse ),
+        ( status = StatusCode::INTERNAL_SERVER_ERROR, description = "Profile could not be updated", body = ErrorResponse )
+    )
+)]
 pub async fn update_profile(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
@@ -85,6 +114,21 @@ pub async fn update_profile(
     Ok(Json(profile.into()))
 }
 
+#[utoipa::path(
+    put,
+    path = "/api/v1/profile/password",
+    tag = "Profile",
+    security(
+        ("bearer_auth" = [])
+    ),
+    request_body = ChangePasswordRequest,
+    responses(
+        ( status = StatusCode::OK, description = "Password changed and existing session revoked", body = ChangePasswordResponse ),
+        ( status = StatusCode::BAD_REQUEST, description = "Password validation failed or current password is incorrect", body = ErrorResponse ),
+        ( status = StatusCode::UNAUTHORIZED, description = "Bearer token is missing, invalid, or expired", body = ErrorResponse ),
+        ( status = StatusCode::INTERNAL_SERVER_ERROR, description = "Password could not be changed", body = ErrorResponse )
+    )
+)]
 pub async fn change_password(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
