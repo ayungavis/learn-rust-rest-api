@@ -172,6 +172,115 @@ async fn verified_user_should_log_in_and_read_profile(database: PgPool) -> Resul
     Ok(())
 }
 
+#[sqlx::test]
+async fn profile_should_return_unauthorized_without_bearer_token(database: PgPool) -> Result<()> {
+    let app = build_test_app(database).await?;
+
+    let response = app
+        .oneshot(Request::get("/api/v1/profile").body(Body::empty())?)
+        .await?;
+
+    let status = response.status();
+
+    let has_bearer_challenge = response
+        .headers()
+        .get(WWW_AUTHENTICATE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value == "Bearer");
+
+    let payload = response_json(response).await?;
+
+    assert_eq!(
+        (
+            status,
+            has_bearer_challenge,
+            payload.get("code").and_then(Value::as_str),
+            payload.get("message").and_then(Value::as_str),
+            payload.get("details").is_none()
+        ),
+        (
+            StatusCode::UNAUTHORIZED,
+            true,
+            Some("AUTHENTICATION_REQUIRED"),
+            Some("A valid Bearer token is required"),
+            true
+        )
+    );
+
+    Ok(())
+}
+
+#[sqlx::test]
+async fn logout_should_revoke_current_session(database: PgPool) -> Result<()> {
+    insert_verified_user(&database).await?;
+
+    let app = build_test_app(database).await?;
+
+    let login_response = post_json(
+        app.clone(),
+        "/api/v1/auth/login",
+        json!({
+            "email": VERIFIED_USER_EMAIL,
+            "password": VERIFIED_USER_PASSWORD
+        }),
+    )
+    .await?;
+
+    let login_status = login_response.status();
+    let login_payload = response_json(login_response).await?;
+
+    if login_status != StatusCode::OK {
+        anyhow::bail!("test setup failed: login returned {login_status}: {login_payload}");
+    }
+
+    let Some(access_token) = login_payload.get("access_token").and_then(Value::as_str) else {
+        anyhow::bail!("login response does not contain access token: {login_payload}");
+    };
+
+    let access_token = access_token.to_owned();
+
+    let logout_request = Request::post("/api/v1/auth/logout")
+        .header(AUTHORIZATION, format!("Bearer {access_token}"))
+        .body(Body::empty())?;
+
+    let logout_response = app.clone().oneshot(logout_request).await?;
+    let logout_status = logout_response.status();
+
+    let profile_request = Request::get("/api/v1/profile")
+        .header(AUTHORIZATION, format!("Bearer {access_token}"))
+        .body(Body::empty())?;
+
+    let profile_response = app.oneshot(profile_request).await?;
+    let profile_status = profile_response.status();
+
+    let has_bearer_challenge = profile_response
+        .headers()
+        .get(WWW_AUTHENTICATE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value == "Bearer");
+
+    let profile_payload = response_json(profile_response).await?;
+
+    assert_eq!(
+        (
+            logout_status,
+            profile_status,
+            has_bearer_challenge,
+            profile_payload.get("code").and_then(Value::as_str),
+            profile_payload.get("message").and_then(Value::as_str)
+        ),
+        (
+            StatusCode::NO_CONTENT,
+            StatusCode::UNAUTHORIZED,
+            true,
+            Some("AUTHENTICATION_REQUIRED"),
+            Some("A valid Bearer token is required")
+        )
+    );
+
+    Ok(())
+}
+
 async fn insert_verified_user(database: &PgPool) -> Result<Uuid> {
     let user_id = Uuid::now_v7();
 
