@@ -187,7 +187,7 @@ fn normalize_display_name(display_name: String) -> Result<String, FieldError> {
 
     Err(FieldError {
         field: "display_name",
-        message: "Display name must contain between 1 and 100 characters ",
+        message: "Display name must contain between 1 and 100 characters",
     })
 }
 

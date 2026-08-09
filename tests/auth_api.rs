@@ -25,7 +25,7 @@ mod common;
 const VERIFIED_USER_EMAIL: &str = "learner@example.com";
 const VERIFIED_USER_PASSWORD: &str = "correct horse battery staple";
 const VERIFIED_USER_DISPLAY_NAME: &str = "Rust Learner";
-const UPDATED_USER_DIPLAY_NAME: &str = "Rust API Learner";
+const UPDATED_USER_DISPLAY_NAME: &str = "Rust API Learner";
 const NEW_VERIFIED_USER_PASSWORD: &str = "new correct horse battery staple";
 
 #[sqlx::test]
@@ -275,7 +275,7 @@ async fn profile_update_should_return_and_persist_normalized_display_name(
         app.clone(),
         Request::patch("/api/v1/profile").header(AUTHORIZATION, format!("Bearer {access_token}")),
         json!({
-            "display_name": format!("    {UPDATED_USER_DIPLAY_NAME}    ")
+            "display_name": format!("    {UPDATED_USER_DISPLAY_NAME}    ")
         }),
     )
     .await?;
@@ -297,7 +297,7 @@ async fn profile_update_should_return_and_persist_normalized_display_name(
     let expected_profile = json!({
         "id": user_id.to_string(),
         "email": VERIFIED_USER_EMAIL,
-        "display_name": UPDATED_USER_DIPLAY_NAME,
+        "display_name": UPDATED_USER_DISPLAY_NAME,
         "email_verified": true
     });
 
@@ -393,6 +393,149 @@ async fn password_change_should_replace_credentials_and_revoke_existing_session(
             StatusCode::UNAUTHORIZED,
             StatusCode::UNAUTHORIZED,
             StatusCode::OK
+        )
+    );
+
+    Ok(())
+}
+
+#[sqlx::test]
+async fn profile_update_should_return_validation_error_when_display_name_is_blank(
+    database: PgPool,
+) -> Result<()> {
+    insert_verified_user(&database).await?;
+
+    let app = build_test_app(database).await?;
+    let access_token = login_verified_user(app.clone()).await?;
+
+    let response = send_json(
+        app,
+        Request::patch("/api/v1/profile").header(AUTHORIZATION, format!("Bearer {access_token}")),
+        json!({
+            "display_name": "       "
+        }),
+    )
+    .await?;
+
+    let status = response.status();
+    let payload = response_json(response).await?;
+
+    let expected_result = json!([{
+        "field": "display_name",
+        "message": "Display name must contain between 1 and 100 characters"
+    }]);
+
+    assert_eq!(
+        (
+            status,
+            payload.get("code").and_then(Value::as_str),
+            payload.get("message").and_then(Value::as_str),
+            payload.get("details")
+        ),
+        (
+            StatusCode::BAD_REQUEST,
+            Some("VALIDATION_ERROR"),
+            Some("The request contains invalid fields"),
+            Some(&expected_result)
+        )
+    );
+
+    Ok(())
+}
+
+#[sqlx::test]
+async fn password_change_should_reject_incorrect_current_password_without_revoking_session(
+    database: PgPool,
+) -> Result<()> {
+    insert_verified_user(&database).await?;
+
+    let app = build_test_app(database).await?;
+    let access_token = login_verified_user(app.clone()).await?;
+
+    let change_response = send_json(
+        app.clone(),
+        Request::put("/api/v1/profile/password")
+            .header(AUTHORIZATION, format!("Bearer {access_token}")),
+        json!({
+            "current_password": "incorrect current password",
+            "new_password": NEW_VERIFIED_USER_PASSWORD
+        }),
+    )
+    .await?;
+
+    let change_status = change_response.status();
+    let change_payload = response_json(change_response).await?;
+
+    let profile_response = app
+        .oneshot(
+            Request::get("/api/v1/profile")
+                .header(AUTHORIZATION, format!("Bearer {access_token}"))
+                .body(Body::empty())?,
+        )
+        .await?;
+
+    let profile_status = profile_response.status();
+
+    assert_eq!(
+        (
+            change_status,
+            change_payload.get("code").and_then(Value::as_str),
+            change_payload.get("message").and_then(Value::as_str),
+            change_payload.get("details").is_none(),
+            profile_status,
+        ),
+        (
+            StatusCode::BAD_REQUEST,
+            Some("CURRENT_PASSWORD_INCORRECT"),
+            Some("The current password is incorrect"),
+            true,
+            StatusCode::OK
+        )
+    );
+
+    Ok(())
+}
+
+#[sqlx::test]
+async fn password_change_should_return_validation_error_when_new_password_is_too_short(
+    database: PgPool,
+) -> Result<()> {
+    insert_verified_user(&database).await?;
+
+    let app = build_test_app(database).await?;
+    let access_token = login_verified_user(app.clone()).await?;
+
+    let response = send_json(
+        app,
+        Request::put("/api/v1/profile/password")
+            .header(AUTHORIZATION, format!("Bearer {access_token}")),
+        json!({
+            "current_password": VERIFIED_USER_PASSWORD,
+            "new_password": "too short"
+        }),
+    )
+    .await?;
+
+    let status = response.status();
+    let payload = response_json(response).await?;
+
+    let expected_result = json!([{
+        "field": "new_password",
+        "message": "Password must contain between 15 and 128 characters"
+    }]);
+
+    assert_eq!(
+        (
+            status,
+            payload.get("code").and_then(Value::as_str),
+            payload.get("message").and_then(Value::as_str),
+            payload.get("details")
+        ),
+        (
+            StatusCode::BAD_REQUEST,
+            Some("VALIDATION_ERROR"),
+            Some("The request contains invalid fields"),
+            Some(&expected_result)
         )
     );
 
