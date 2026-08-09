@@ -11,3 +11,6 @@ lint:
 
 test:
 	cargo test --locked
+
+validate:
+	make format && make lint && make test
