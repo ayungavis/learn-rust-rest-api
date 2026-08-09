@@ -1,20 +1,29 @@
 use anyhow::Result;
+use argon2::{
+    Argon2, PasswordHasher,
+    password_hash::{SaltString, rand_core::OsRng},
+};
 use axum::{
     Router,
     body::{Body, to_bytes},
     http::{
         Request, StatusCode,
-        header::{CONTENT_TYPE, WWW_AUTHENTICATE},
+        header::{AUTHORIZATION, CONTENT_TYPE, WWW_AUTHENTICATE},
     },
     response::Response,
 };
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use tower::ServiceExt;
+use uuid::Uuid;
 
 use crate::common::build_test_app;
 
 mod common;
+
+const VERIFIED_USER_EMAIL: &str = "learner@example.com";
+const VERIFIED_USER_PASSWORD: &str = "correct horse battery staple";
+const VERIFIED_USER_DISPLAY_NAME: &str = "Rust Learner";
 
 #[sqlx::test]
 async fn register_should_return_bad_request_when_email_is_invalid(database: PgPool) -> Result<()> {
@@ -103,6 +112,104 @@ async fn login_should_return_unauthorized_when_credentials_are_invalid(
     );
 
     Ok(())
+}
+
+#[sqlx::test]
+async fn verified_user_should_log_in_and_read_profile(database: PgPool) -> Result<()> {
+    let user_id = insert_verified_user(&database).await?;
+    let app = build_test_app(database).await?;
+
+    let login_response = post_json(
+        app.clone(),
+        "/api/v1/auth/login",
+        json!({
+            "email": VERIFIED_USER_EMAIL,
+            "password": VERIFIED_USER_PASSWORD
+        }),
+    )
+    .await?;
+
+    let login_status = login_response.status();
+    let login_payload = response_json(login_response).await?;
+
+    let Some(access_token) = login_payload.get("access_token").and_then(Value::as_str) else {
+        anyhow::bail!("login response does not contain access token: {login_payload}");
+    };
+
+    let profile_request = Request::get("/api/v1/profile")
+        .header(AUTHORIZATION, format!("Bearer {access_token}"))
+        .body(Body::empty())?;
+
+    let profile_response = app.oneshot(profile_request).await?;
+
+    let profile_status = profile_response.status();
+    let profile_payload = response_json(profile_response).await?;
+
+    assert_eq!(
+        (
+            login_status,
+            !access_token.is_empty(),
+            login_payload.get("token_type").and_then(Value::as_str),
+            login_payload.get("expires_in").and_then(Value::as_u64),
+            profile_status,
+            profile_payload
+        ),
+        (
+            StatusCode::OK,
+            true,
+            Some("Bearer"),
+            Some(604_800),
+            StatusCode::OK,
+            json!({
+                "id": user_id.to_string(),
+                "email": VERIFIED_USER_EMAIL,
+                "display_name": VERIFIED_USER_DISPLAY_NAME,
+                "email_verified": true
+            })
+        )
+    );
+
+    Ok(())
+}
+
+async fn insert_verified_user(database: &PgPool) -> Result<Uuid> {
+    let user_id = Uuid::now_v7();
+
+    let password_hash = tokio::task::spawn_blocking(|| {
+        let salt = SaltString::generate(&mut OsRng);
+
+        Argon2::default()
+            .hash_password(VERIFIED_USER_PASSWORD.as_bytes(), &salt)
+            .map(|hash| hash.to_string())
+    })
+    .await??;
+
+    sqlx::query(
+        r#"
+        INSERT INTO users (
+            id,
+            email,
+            password_hash,
+            display_name,
+            email_verified_at
+        )
+        VALUES (
+            $1,
+            $2,
+            $3,
+            $4,
+            now()
+        )
+        "#,
+    )
+    .bind(user_id)
+    .bind(VERIFIED_USER_EMAIL)
+    .bind(password_hash)
+    .bind(VERIFIED_USER_DISPLAY_NAME)
+    .execute(database)
+    .await?;
+
+    Ok(user_id)
 }
 
 async fn post_json(app: Router, uri: &str, payload: Value) -> Result<Response> {
