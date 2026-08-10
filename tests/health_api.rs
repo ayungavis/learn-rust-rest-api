@@ -9,6 +9,10 @@ use tower::ServiceExt;
 
 use crate::common::build_test_app;
 
+#[expect(
+    dead_code,
+    reason = "Shared integration-test helpers are used by other test crates"
+)]
 mod common;
 
 #[tokio::test]

@@ -1,30 +1,24 @@
 use anyhow::Result;
-use argon2::{
-    Argon2, PasswordHasher,
-    password_hash::{SaltString, rand_core::OsRng},
-};
 use axum::{
     Router,
-    body::{Body, to_bytes},
+    body::Body,
     http::{
         Request, StatusCode,
-        header::{AUTHORIZATION, CONTENT_TYPE, WWW_AUTHENTICATE},
-        request::Builder,
+        header::{AUTHORIZATION, WWW_AUTHENTICATE},
     },
     response::Response,
 };
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use tower::ServiceExt;
-use uuid::Uuid;
 
-use crate::common::build_test_app;
+use crate::common::{
+    VERIFIED_USER_DISPLAY_NAME, VERIFIED_USER_EMAIL, VERIFIED_USER_PASSWORD, build_test_app,
+    insert_verified_user, login_verified_user, response_json, send_json,
+};
 
 mod common;
 
-const VERIFIED_USER_EMAIL: &str = "learner@example.com";
-const VERIFIED_USER_PASSWORD: &str = "correct horse battery staple";
-const VERIFIED_USER_DISPLAY_NAME: &str = "Rust Learner";
 const UPDATED_USER_DISPLAY_NAME: &str = "Rust API Learner";
 const NEW_VERIFIED_USER_PASSWORD: &str = "new correct horse battery staple";
 
@@ -542,90 +536,6 @@ async fn password_change_should_return_validation_error_when_new_password_is_too
     Ok(())
 }
 
-async fn login_verified_user(app: Router) -> Result<String> {
-    let response = post_json(
-        app,
-        "/api/v1/auth/login",
-        json!({
-            "email": VERIFIED_USER_EMAIL,
-            "password": VERIFIED_USER_PASSWORD
-        }),
-    )
-    .await?;
-
-    let status = response.status();
-    let payload = response_json(response).await?;
-
-    if status != StatusCode::OK {
-        anyhow::bail!("test setup failed: login returned {status}: {payload}");
-    }
-
-    let Some(access_token) = payload.get("access_token").and_then(Value::as_str) else {
-        anyhow::bail!("login response does not contain access token: {payload}");
-    };
-
-    Ok(access_token.to_owned())
-}
-
-async fn insert_verified_user(database: &PgPool) -> Result<Uuid> {
-    let user_id = Uuid::now_v7();
-
-    let password_hash = tokio::task::spawn_blocking(|| {
-        let salt = SaltString::generate(&mut OsRng);
-
-        Argon2::default()
-            .hash_password(VERIFIED_USER_PASSWORD.as_bytes(), &salt)
-            .map(|hash| hash.to_string())
-    })
-    .await??;
-
-    sqlx::query(
-        r#"
-        INSERT INTO users (
-            id,
-            email,
-            password_hash,
-            display_name,
-            email_verified_at
-        )
-        VALUES (
-            $1,
-            $2,
-            $3,
-            $4,
-            now()
-        )
-        "#,
-    )
-    .bind(user_id)
-    .bind(VERIFIED_USER_EMAIL)
-    .bind(password_hash)
-    .bind(VERIFIED_USER_DISPLAY_NAME)
-    .execute(database)
-    .await?;
-
-    Ok(user_id)
-}
-
 async fn post_json(app: Router, uri: &str, payload: Value) -> Result<Response> {
     send_json(app, Request::post(uri), payload).await
-}
-
-async fn send_json(app: Router, request_builder: Builder, payload: Value) -> Result<Response> {
-    let body = serde_json::to_vec(&payload)?;
-
-    let request = request_builder
-        .header(CONTENT_TYPE, "application/json")
-        .body(Body::from(body))?;
-
-    let response = app.oneshot(request).await?;
-
-    Ok(response)
-}
-
-async fn response_json(response: Response) -> Result<Value> {
-    let body = to_bytes(response.into_body(), 64 * 1024).await?;
-    let payload = serde_json::from_slice(&body)?;
-
-    Ok(payload)
 }
