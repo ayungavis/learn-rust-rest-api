@@ -346,6 +346,157 @@ async fn forgot_password_should_not_reveal_missing_account(database: PgPool) -> 
 }
 
 #[sqlx::test]
+async fn email_confirmation_token_should_be_single_use(database: PgPool) -> Result<()> {
+    let (app, mailer) = build_test_app_with_mailer(database).await?;
+
+    let register_response = post_json(
+        app.clone(),
+        "/api/v1/auth/register",
+        json!({
+            "email": UNVERIFIED_USER_EMAIL,
+            "password": UNVERIFIED_USER_PASSWORD,
+            "display_name": "New Rust Learner"
+        }),
+    )
+    .await?;
+
+    let register_status = register_response.status();
+    if register_status != StatusCode::ACCEPTED {
+        let payload = response_json(register_response).await?;
+
+        anyhow::bail!(
+            "test setup failed: registration returned \
+            {register_status}: {payload}"
+        );
+    };
+
+    let messages = mailer.test_messages().await?;
+
+    let [message] = messages.as_slice() else {
+        anyhow::bail!("expected one confirmation email, got {}", messages.len());
+    };
+
+    let confirmation_token = email_token(message, CONFIRMATION_URL_PREFIX)?;
+
+    let first_confirmation_response = post_json(
+        app.clone(),
+        "/api/v1/auth/confirm-email",
+        json!({
+            "token": &confirmation_token,
+        }),
+    )
+    .await?;
+
+    let first_confirmation_status = first_confirmation_response.status();
+
+    let reused_token_response = post_json(
+        app,
+        "/api/v1/auth/confirm-email",
+        json!({
+            "token": confirmation_token
+        }),
+    )
+    .await?;
+
+    let reused_token_status = reused_token_response.status();
+    let reused_token_payload = response_json(reused_token_response).await?;
+
+    assert_eq!(
+        (
+            first_confirmation_status,
+            reused_token_status,
+            reused_token_payload.get("code").and_then(Value::as_str),
+            reused_token_payload.get("message").and_then(Value::as_str),
+            reused_token_payload.get("details").is_none()
+        ),
+        (
+            StatusCode::OK,
+            StatusCode::BAD_REQUEST,
+            Some("INVALID_OR_EXPIRED_TOKEN"),
+            Some("The email confirmation token is invalid or expired"),
+            true
+        )
+    );
+
+    Ok(())
+}
+
+#[sqlx::test]
+async fn duplicate_registration_should_not_replace_verified_account_credentials(
+    database: PgPool,
+) -> Result<()> {
+    insert_verified_user(&database).await?;
+
+    let (app, mailer) = build_test_app_with_mailer(database).await?;
+
+    let registration_response = post_json(
+        app.clone(),
+        "/api/v1/auth/register",
+        json!({
+            "email": VERIFIED_USER_EMAIL,
+            "password": VERIFIED_USER_PASSWORD,
+            "display_name": "Account Takeover Attempt"
+        }),
+    )
+    .await?;
+
+    let registration_status = registration_response.status();
+    let registration_payload = response_json(registration_response).await?;
+
+    let messages = mailer.test_messages().await?;
+
+    let original_password_response = post_json(
+        app.clone(),
+        "/api/v1/auth/login",
+        json!({
+            "email": VERIFIED_USER_EMAIL,
+            "password": VERIFIED_USER_PASSWORD
+        }),
+    )
+    .await?;
+
+    let original_password_status = original_password_response.status();
+
+    let attempted_password_response = post_json(
+        app,
+        "/api/v1/auth/login",
+        json!({
+            "email": VERIFIED_USER_EMAIL,
+            "password": NEW_VERIFIED_USER_PASSWORD
+        }),
+    )
+    .await?;
+
+    let attempted_password_status = attempted_password_response.status();
+    let attempted_password_payload = response_json(attempted_password_response).await?;
+
+    assert_eq!(
+        (
+            registration_status,
+            registration_payload,
+            messages.is_empty(),
+            original_password_status,
+            attempted_password_status,
+            attempted_password_payload
+                .get("code")
+                .and_then(Value::as_str)
+        ),
+        (
+            StatusCode::ACCEPTED,
+            json!({
+                "message": "Registration request accepted"
+            }),
+            true,
+            StatusCode::OK,
+            StatusCode::UNAUTHORIZED,
+            Some("INVALID_CREDENTIALS")
+        )
+    );
+
+    Ok(())
+}
+
+#[sqlx::test]
 async fn register_should_return_bad_request_when_email_is_invalid(database: PgPool) -> Result<()> {
     let app = build_test_app(database).await?;
 
