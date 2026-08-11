@@ -36,12 +36,16 @@ pub async fn build_test_app(database: PgPool) -> Result<Router> {
 }
 
 pub async fn login_verified_user(app: Router) -> Result<String> {
-    let response = post_json(
+    login_user(app, VERIFIED_USER_EMAIL, VERIFIED_USER_PASSWORD).await
+}
+
+pub async fn login_user(app: Router, email: &str, password: &str) -> Result<String> {
+    let response = send_json(
         app,
-        "/api/v1/auth/login",
+        Request::post("/api/v1/auth/login"),
         json!({
-            "email": VERIFIED_USER_EMAIL,
-            "password": VERIFIED_USER_PASSWORD
+            "email": email,
+            "password": password
         }),
     )
     .await?;
@@ -61,13 +65,29 @@ pub async fn login_verified_user(app: Router) -> Result<String> {
 }
 
 pub async fn insert_verified_user(database: &PgPool) -> Result<Uuid> {
-    let user_id = Uuid::now_v7();
+    insert_verified_user_with_credentials(
+        database,
+        VERIFIED_USER_EMAIL,
+        VERIFIED_USER_PASSWORD,
+        VERIFIED_USER_DISPLAY_NAME,
+    )
+    .await
+}
 
-    let password_hash = tokio::task::spawn_blocking(|| {
+pub async fn insert_verified_user_with_credentials(
+    database: &PgPool,
+    email: &str,
+    password: &str,
+    display_name: &str,
+) -> Result<Uuid> {
+    let user_id = Uuid::now_v7();
+    let password = password.to_owned();
+
+    let password_hash = tokio::task::spawn_blocking(move || {
         let salt = SaltString::generate(&mut OsRng);
 
         Argon2::default()
-            .hash_password(VERIFIED_USER_PASSWORD.as_bytes(), &salt)
+            .hash_password(password.as_bytes(), &salt)
             .map(|hash| hash.to_string())
     })
     .await??;
@@ -91,9 +111,9 @@ pub async fn insert_verified_user(database: &PgPool) -> Result<Uuid> {
         "#,
     )
     .bind(user_id)
-    .bind(VERIFIED_USER_EMAIL)
+    .bind(email)
     .bind(password_hash)
-    .bind(VERIFIED_USER_DISPLAY_NAME)
+    .bind(display_name)
     .execute(database)
     .await?;
 
