@@ -22,9 +22,12 @@ mod common;
 
 const UPDATED_USER_DISPLAY_NAME: &str = "Rust API Learner";
 const NEW_VERIFIED_USER_PASSWORD: &str = "new correct horse battery staple";
+
 const UNVERIFIED_USER_EMAIL: &str = "new-learner@example.com";
 const UNVERIFIED_USER_PASSWORD: &str = "another correct horse battery staple";
+
 const CONFIRMATION_URL_PREFIX: &str = "http://localhost:5173/confirm-email?token=";
+const RESET_PASSWORD_URL_PREFIX: &str = "http://localhost:5173/reset-password?token=";
 
 #[sqlx::test]
 async fn registered_user_should_confirm_email_and_log_in(database: PgPool) -> Result<()> {
@@ -50,7 +53,7 @@ async fn registered_user_should_confirm_email_and_log_in(database: PgPool) -> Re
         anyhow::bail!("expected one confirmation email, got {}", messages.len());
     };
 
-    let token = confirmation_tokens(message)?;
+    let token = email_token(message, CONFIRMATION_URL_PREFIX)?;
 
     let unverified_login_response = post_json(
         app.clone(),
@@ -110,6 +113,122 @@ async fn registered_user_should_confirm_email_and_log_in(database: PgPool) -> Re
             json!({
                 "message": "Email confirmed"
             }),
+            StatusCode::OK
+        )
+    );
+
+    Ok(())
+}
+
+#[sqlx::test]
+async fn verified_user_should_reset_password_and_revoke_existing_session(
+    database: PgPool,
+) -> Result<()> {
+    insert_verified_user(&database).await?;
+
+    let (app, mailer) = build_test_app_with_mailer(database).await?;
+
+    let existing_access_token = login_verified_user(app.clone()).await?;
+
+    let forgot_response = post_json(
+        app.clone(),
+        "/api/v1/auth/forgot-password",
+        json!({
+            "email": VERIFIED_USER_EMAIL
+        }),
+    )
+    .await?;
+
+    let forgot_status = forgot_response.status();
+    let forgot_payload = response_json(forgot_response).await?;
+
+    let messages = mailer.test_messages().await?;
+
+    let [message] = messages.as_slice() else {
+        anyhow::bail!(
+            "
+            expected one password reset email, got {}",
+            messages.len()
+        );
+    };
+
+    let reset_token = email_token(message, RESET_PASSWORD_URL_PREFIX)?;
+
+    let reset_response = post_json(
+        app.clone(),
+        "/api/v1/auth/reset-password",
+        json!({
+            "token": reset_token,
+            "new_password": NEW_VERIFIED_USER_PASSWORD
+        }),
+    )
+    .await?;
+
+    let reset_status = reset_response.status();
+    let reset_payload = response_json(reset_response).await?;
+
+    let revoked_session_response = app
+        .clone()
+        .oneshot(
+            Request::get("/api/v1/profile")
+                .header(AUTHORIZATION, format!("Bearer {existing_access_token}"))
+                .body(Body::empty())?,
+        )
+        .await?;
+
+    let revoked_session_status = revoked_session_response.status();
+    let revoked_session_payload = response_json(revoked_session_response).await?;
+
+    let old_password_response = post_json(
+        app.clone(),
+        "/api/v1/auth/login",
+        json!({
+            "email": VERIFIED_USER_EMAIL,
+            "password": VERIFIED_USER_PASSWORD
+        }),
+    )
+    .await?;
+
+    let old_password_status = old_password_response.status();
+    let old_password_payload = response_json(old_password_response).await?;
+
+    let new_password_response = post_json(
+        app,
+        "/api/v1/auth/login",
+        json!({
+            "email": VERIFIED_USER_EMAIL,
+            "password": NEW_VERIFIED_USER_PASSWORD
+        }),
+    )
+    .await?;
+
+    let new_password_status = new_password_response.status();
+
+    assert_eq!(
+        (
+            forgot_status,
+            forgot_payload,
+            reset_status,
+            reset_payload,
+            revoked_session_status,
+            revoked_session_payload.get("code").and_then(Value::as_str),
+            old_password_status,
+            old_password_payload.get("code").and_then(Value::as_str),
+            new_password_status
+        ),
+        (
+            StatusCode::ACCEPTED,
+            json!({
+                "message": "If the account exists, password reset instructions will be sent to your email."
+            }),
+            StatusCode::OK,
+            json!({
+                "message": "Password reset successfully"
+            }),
+            StatusCode::UNAUTHORIZED,
+            Some("AUTHENTICATION_REQUIRED"),
+            StatusCode::UNAUTHORIZED,
+            Some("INVALID_CREDENTIALS"),
             StatusCode::OK
         )
     );
@@ -635,14 +754,14 @@ async fn post_json(app: Router, uri: &str, payload: Value) -> Result<Response> {
     send_json(app, Request::post(uri), payload).await
 }
 
-fn confirmation_tokens(message: &str) -> Result<String> {
+fn email_token(message: &str, url_prefix: &str) -> Result<String> {
     let decoded_message = message
         .replace("=\r\n", "")
         .replace("=\n", "")
         .replace("=3D", "=");
 
-    let Some((_, content)) = decoded_message.split_once(CONFIRMATION_URL_PREFIX) else {
-        anyhow::bail!("confirmation email does not contain the expected URL");
+    let Some((_, content)) = decoded_message.split_once(url_prefix) else {
+        anyhow::bail!("email does not contain the expected URL");
     };
 
     let Some(token) = content.split_whitespace().next() else {
