@@ -20,13 +20,26 @@ pub const VERIFIED_USER_PASSWORD: &str = "correct horse battery staple";
 pub const VERIFIED_USER_DISPLAY_NAME: &str = "Rust Learner";
 
 pub async fn build_test_app(database: PgPool) -> Result<Router> {
-    let (app, _) = build_test_app_with_storage(database).await?;
+    let (app, _, _) = build_test_app_with_dependencies(database).await?;
     Ok(app)
 }
 
+#[allow(dead_code)]
 pub async fn build_test_app_with_storage(database: PgPool) -> Result<(Router, ObjectStorage)> {
-    let mailer = Mailer::new(
-        "smtp://localhost:1025",
+    let (app, _, storage) = build_test_app_with_dependencies(database).await?;
+    Ok((app, storage))
+}
+
+#[allow(dead_code)]
+pub async fn build_test_app_with_mailer(database: PgPool) -> Result<(Router, Mailer)> {
+    let (app, mailer, _) = build_test_app_with_dependencies(database).await?;
+    Ok((app, mailer))
+}
+
+async fn build_test_app_with_dependencies(
+    database: PgPool,
+) -> Result<(Router, Mailer, ObjectStorage)> {
+    let mailer = Mailer::new_test(
         "Rust Catalog <noreply@example.com>",
         "http://localhost:5173".to_owned(),
     )?;
@@ -35,11 +48,11 @@ pub async fn build_test_app_with_storage(database: PgPool) -> Result<(Router, Ob
 
     let app = build_router(AppState {
         database,
-        mailer,
+        mailer: mailer.clone(),
         storage: storage.clone(),
     });
 
-    Ok((app, storage))
+    Ok((app, mailer, storage))
 }
 
 pub async fn login_verified_user(app: Router) -> Result<String> {

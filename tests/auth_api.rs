@@ -14,13 +14,108 @@ use tower::ServiceExt;
 
 use crate::common::{
     VERIFIED_USER_DISPLAY_NAME, VERIFIED_USER_EMAIL, VERIFIED_USER_PASSWORD, build_test_app,
-    insert_verified_user, login_verified_user, response_json, send_json,
+    build_test_app_with_mailer, insert_verified_user, login_verified_user, response_json,
+    send_json,
 };
 
 mod common;
 
 const UPDATED_USER_DISPLAY_NAME: &str = "Rust API Learner";
 const NEW_VERIFIED_USER_PASSWORD: &str = "new correct horse battery staple";
+const UNVERIFIED_USER_EMAIL: &str = "new-learner@example.com";
+const UNVERIFIED_USER_PASSWORD: &str = "another correct horse battery staple";
+const CONFIRMATION_URL_PREFIX: &str = "http://localhost:5173/confirm-email?token=";
+
+#[sqlx::test]
+async fn registered_user_should_confirm_email_and_log_in(database: PgPool) -> Result<()> {
+    let (app, mailer) = build_test_app_with_mailer(database).await?;
+
+    let register_response = post_json(
+        app.clone(),
+        "/api/v1/auth/register",
+        json!({
+            "email": UNVERIFIED_USER_EMAIL,
+            "password": UNVERIFIED_USER_PASSWORD,
+            "display_name": "New Rust Learner"
+        }),
+    )
+    .await?;
+
+    let register_status = register_response.status();
+    let register_payload = response_json(register_response).await?;
+
+    let messages = mailer.test_messages().await?;
+
+    let [message] = messages.as_slice() else {
+        anyhow::bail!("expected one confirmation email, got {}", messages.len());
+    };
+
+    let token = confirmation_tokens(message)?;
+
+    let unverified_login_response = post_json(
+        app.clone(),
+        "/api/v1/auth/login",
+        json!({
+            "email": UNVERIFIED_USER_EMAIL,
+            "password": UNVERIFIED_USER_PASSWORD
+        }),
+    )
+    .await?;
+
+    let unverified_login_status = unverified_login_response.status();
+    let unverified_login_payload = response_json(unverified_login_response).await?;
+
+    let confirm_response = post_json(
+        app.clone(),
+        "/api/v1/auth/confirm-email",
+        json!({
+            "token": token
+        }),
+    )
+    .await?;
+
+    let confirm_status = confirm_response.status();
+    let confirm_payload = response_json(confirm_response).await?;
+
+    let verified_login_response = post_json(
+        app,
+        "/api/v1/auth/login",
+        json!({
+            "email": UNVERIFIED_USER_EMAIL,
+            "password": UNVERIFIED_USER_PASSWORD
+        }),
+    )
+    .await?;
+
+    let verified_login_status = verified_login_response.status();
+
+    assert_eq!(
+        (
+            register_status,
+            register_payload,
+            unverified_login_status,
+            unverified_login_payload.get("code").and_then(Value::as_str),
+            confirm_status,
+            confirm_payload,
+            verified_login_status
+        ),
+        (
+            StatusCode::ACCEPTED,
+            json!({
+                "message": "Registration request accepted"
+            }),
+            StatusCode::FORBIDDEN,
+            Some("EMAIL_NOT_VERIFIED"),
+            StatusCode::OK,
+            json!({
+                "message": "Email confirmed"
+            }),
+            StatusCode::OK
+        )
+    );
+
+    Ok(())
+}
 
 #[sqlx::test]
 async fn register_should_return_bad_request_when_email_is_invalid(database: PgPool) -> Result<()> {
@@ -538,4 +633,21 @@ async fn password_change_should_return_validation_error_when_new_password_is_too
 
 async fn post_json(app: Router, uri: &str, payload: Value) -> Result<Response> {
     send_json(app, Request::post(uri), payload).await
+}
+
+fn confirmation_tokens(message: &str) -> Result<String> {
+    let decoded_message = message
+        .replace("=\r\n", "")
+        .replace("=\n", "")
+        .replace("=3D", "=");
+
+    let Some((_, content)) = decoded_message.split_once(CONFIRMATION_URL_PREFIX) else {
+        anyhow::bail!("confirmation email does not contain the expected URL");
+    };
+
+    let Some(token) = content.split_whitespace().next() else {
+        anyhow::bail!("confirmation email does not contain a token");
+    };
+
+    Ok(token.to_owned())
 }

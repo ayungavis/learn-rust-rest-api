@@ -1,8 +1,12 @@
 use std::time::Duration;
 
 use lettre::{
-    AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor, message::Mailbox,
-    transport::smtp::Error as SmtpError,
+    AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
+    message::Mailbox,
+    transport::{
+        smtp::Error as SmtpError,
+        stub::{AsyncStubTransport, Error as StubError},
+    },
 };
 use thiserror::Error;
 use tokio::time::sleep;
@@ -11,9 +15,15 @@ const SMTP_MAX_ATTEMPTS: u8 = 3;
 
 #[derive(Clone)]
 pub struct Mailer {
-    transport: AsyncSmtpTransport<Tokio1Executor>,
+    transport: MailTransport,
     from: Mailbox,
     frontend_url: String,
+}
+
+#[derive(Clone)]
+enum MailTransport {
+    Smtp(AsyncSmtpTransport<Tokio1Executor>),
+    Test(AsyncStubTransport),
 }
 
 #[derive(Debug, Error)]
@@ -24,6 +34,10 @@ pub enum MailError {
     Message(#[from] lettre::error::Error),
     #[error("SMTP operation failed")]
     Smtp(#[from] SmtpError),
+    #[error("test email transport failed")]
+    Stub(#[from] StubError),
+    #[error("sent message are only available for the test email transport")]
+    TestMessageUnavailable,
 }
 
 impl Mailer {
@@ -37,7 +51,7 @@ impl Mailer {
         let from = from.parse::<Mailbox>()?;
 
         Ok(Self {
-            transport,
+            transport: MailTransport::Smtp(transport),
             from,
             frontend_url,
         })
@@ -99,10 +113,18 @@ impl Mailer {
     }
 
     async fn send_message(&self, message: Message) -> Result<(), MailError> {
+        let transport = match &self.transport {
+            MailTransport::Smtp(transport) => transport,
+            MailTransport::Test(transport) => {
+                transport.send(message).await?;
+                return Ok(());
+            }
+        };
+
         let mut attempt = 1_u8;
 
         loop {
-            match self.transport.send(message.clone()).await {
+            match transport.send(message.clone()).await {
                 Ok(_) => return Ok(()),
 
                 Err(error) if attempt >= SMTP_MAX_ATTEMPTS => return Err(error.into()),
@@ -121,5 +143,40 @@ impl Mailer {
                 }
             }
         }
+    }
+
+    /// Crates an in-memory email client for integration tests
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the sender address is invalid
+    #[doc(hidden)]
+    pub fn new_test(from: &str, frontend_url: String) -> Result<Self, MailError> {
+        let from = from.parse::<Mailbox>()?;
+
+        Ok(Self {
+            transport: MailTransport::Test(AsyncStubTransport::new_ok()),
+            from,
+            frontend_url,
+        })
+    }
+
+    /// Returns a message captured by the in-memory test transport
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when this mailer uses the SMTP transport
+    #[doc(hidden)]
+    pub async fn test_messages(&self) -> Result<Vec<String>, MailError> {
+        let MailTransport::Test(transport) = &self.transport else {
+            return Err(MailError::TestMessageUnavailable);
+        };
+
+        Ok(transport
+            .messages()
+            .await
+            .into_iter()
+            .map(|(_, message)| message)
+            .collect())
     }
 }
