@@ -1,24 +1,41 @@
-use std::env;
+use std::{collections::HashMap, env, sync::Arc};
 
 use aws_config::{BehaviorVersion, Region, retry::RetryConfig};
 use aws_sdk_s3::{
     Client,
-    config::{Credentials, SharedCredentialsProvider},
+    config::Credentials,
     error::SdkError,
     operation::{delete_object::DeleteObjectError, put_object::PutObjectError},
     primitives::ByteStream,
 };
 use axum::body::Bytes;
 use thiserror::Error;
+use tokio::sync::RwLock;
 
 const R2_MAX_ATTEMPTS: u32 = 3;
 
 /// Client for storing public product images in Cloudflare R2
 #[derive(Clone)]
 pub struct ObjectStorage {
-    client: Client,
-    bucket: String,
+    backend: ObjectStorageBackend,
     public_base_url: String,
+}
+
+#[derive(Clone)]
+enum ObjectStorageBackend {
+    R2 {
+        client: Client,
+        bucket: String,
+    },
+    InMemory {
+        objects: Arc<RwLock<HashMap<String, InMemoryObject>>>,
+    },
+}
+
+#[derive(Clone)]
+struct InMemoryObject {
+    content_type: String,
+    bytes: Bytes,
 }
 
 /// Errors produced while constructing the R2 client
@@ -75,8 +92,10 @@ impl ObjectStorage {
             .await;
 
         Ok(Self {
-            client: Client::new(&shared_config),
-            bucket,
+            backend: ObjectStorageBackend::R2 {
+                client: Client::new(&shared_config),
+                bucket,
+            },
             public_base_url: public_base_url.trim_end_matches("/").to_owned(),
         })
     }
@@ -92,23 +111,36 @@ impl ObjectStorage {
         content_type: &str,
         bytes: Bytes,
     ) -> Result<(), ObjectStorageError> {
-        self.client
-            .put_object()
-            .bucket(&self.bucket)
-            .key(key)
-            .content_type(content_type)
-            .cache_control("public, max-age=60")
-            .body(ByteStream::from(bytes))
-            .send()
-            .await
-            .inspect_err(|error| {
-                tracing::warn!(
-                    key,
-                    error = ?error,
-                    max_attemps = R2_MAX_ATTEMPTS,
-                        "R2 upload failed after SDK retries"
+        match &self.backend {
+            ObjectStorageBackend::R2 { client, bucket } => {
+                client
+                    .put_object()
+                    .bucket(bucket)
+                    .key(key)
+                    .content_type(content_type)
+                    .cache_control("public, max-age=60")
+                    .body(ByteStream::from(bytes))
+                    .send()
+                    .await
+                    .inspect_err(|error| {
+                        tracing::warn!(
+                            key,
+                            error = ?error,
+                            max_attemps = R2_MAX_ATTEMPTS,
+                                "R2 upload failed after SDK retries"
+                        );
+                    })?;
+            }
+            ObjectStorageBackend::InMemory { objects } => {
+                objects.write().await.insert(
+                    key.to_owned(),
+                    InMemoryObject {
+                        content_type: content_type.to_owned(),
+                        bytes,
+                    },
                 );
-            })?;
+            }
+        }
 
         Ok(())
     }
@@ -119,20 +151,27 @@ impl ObjectStorage {
     ///
     /// Returns an error after the configured SDK retries are exhausted
     pub async fn delete(&self, key: &str) -> Result<(), ObjectStorageError> {
-        self.client
-            .delete_object()
-            .bucket(&self.bucket)
-            .key(key)
-            .send()
-            .await
-            .inspect_err(|error| {
-                tracing::warn!(
-                    key,
-                    error = ?error,
-                    max_attempts = R2_MAX_ATTEMPTS,
-                    "R2 deletion failed after SDK retries"
-                )
-            })?;
+        match &self.backend {
+            ObjectStorageBackend::R2 { client, bucket } => {
+                client
+                    .delete_object()
+                    .bucket(bucket)
+                    .key(key)
+                    .send()
+                    .await
+                    .inspect_err(|error| {
+                        tracing::warn!(
+                            key,
+                            error = ?error,
+                            max_attempts = R2_MAX_ATTEMPTS,
+                            "R2 deletion failed after SDK retries"
+                        )
+                    })?;
+            }
+            ObjectStorageBackend::InMemory { objects } => {
+                objects.write().await.remove(key);
+            }
+        }
 
         Ok(())
     }
@@ -145,19 +184,25 @@ impl ObjectStorage {
     /// Creates a test instance that never connects to real S3/R2.
     /// Used by integration tests only.
     pub async fn new_test() -> Self {
-        let credentials = Credentials::new("test", "test", None, None, "test");
-        let shared_config = aws_config::SdkConfig::builder()
-            .region(Region::new("us-east-1"))
-            .credentials_provider(SharedCredentialsProvider::new(credentials))
-            .endpoint_url("http://localhost:9000")
-            .behavior_version(BehaviorVersion::v2026_01_12())
-            .build();
-
         Self {
-            client: Client::new(&shared_config),
-            bucket: "test-bucket".to_owned(),
-            public_base_url: "http://localhost:9000".to_owned(),
+            backend: ObjectStorageBackend::InMemory {
+                objects: Arc::new(RwLock::new(HashMap::new())),
+            },
+            public_base_url: "https://cdn.example.test".to_owned(),
         }
+    }
+
+    #[doc(hidden)]
+    pub async fn test_object(&self, key: &str) -> Option<(String, Bytes)> {
+        let ObjectStorageBackend::InMemory { objects } = &self.backend else {
+            return None;
+        };
+
+        objects
+            .read()
+            .await
+            .get(key)
+            .map(|object| (object.content_type.clone(), object.bytes.clone()))
     }
 }
 

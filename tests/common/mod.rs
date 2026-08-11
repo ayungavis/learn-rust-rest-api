@@ -20,6 +20,11 @@ pub const VERIFIED_USER_PASSWORD: &str = "correct horse battery staple";
 pub const VERIFIED_USER_DISPLAY_NAME: &str = "Rust Learner";
 
 pub async fn build_test_app(database: PgPool) -> Result<Router> {
+    let (app, _) = build_test_app_with_storage(database).await?;
+    Ok(app)
+}
+
+pub async fn build_test_app_with_storage(database: PgPool) -> Result<(Router, ObjectStorage)> {
     let mailer = Mailer::new(
         "smtp://localhost:1025",
         "Rust Catalog <noreply@example.com>",
@@ -28,11 +33,13 @@ pub async fn build_test_app(database: PgPool) -> Result<Router> {
 
     let storage = ObjectStorage::new_test().await;
 
-    Ok(build_router(AppState {
+    let app = build_router(AppState {
         database,
         mailer,
-        storage,
-    }))
+        storage: storage.clone(),
+    });
+
+    Ok((app, storage))
 }
 
 pub async fn login_verified_user(app: Router) -> Result<String> {
