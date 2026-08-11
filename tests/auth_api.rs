@@ -237,6 +237,115 @@ async fn verified_user_should_reset_password_and_revoke_existing_session(
 }
 
 #[sqlx::test]
+async fn password_reset_token_should_be_single_use(database: PgPool) -> Result<()> {
+    insert_verified_user(&database).await?;
+
+    let (app, mailer) = build_test_app_with_mailer(database).await?;
+
+    let forgot_response = post_json(
+        app.clone(),
+        "/api/v1/auth/forgot-password",
+        json!({
+            "email": VERIFIED_USER_EMAIL
+        }),
+    )
+    .await?;
+
+    let forgot_status = forgot_response.status();
+    if forgot_status != StatusCode::ACCEPTED {
+        let payload = response_json(forgot_response).await?;
+
+        anyhow::bail!(
+            "test setup failed: forgot password returned \
+            {forgot_status}: {payload}"
+        );
+    };
+
+    let messages = mailer.test_messages().await?;
+
+    let [message] = messages.as_slice() else {
+        anyhow::bail!("expected one password reset email, got {}", messages.len());
+    };
+
+    let reset_token = email_token(message, RESET_PASSWORD_URL_PREFIX)?;
+
+    let first_reset_response = post_json(
+        app.clone(),
+        "/api/v1/auth/reset-password",
+        json!({
+            "token": &reset_token,
+            "new_password": NEW_VERIFIED_USER_PASSWORD
+        }),
+    )
+    .await?;
+
+    let first_reset_status = first_reset_response.status();
+
+    let reused_token_response = post_json(
+        app,
+        "/api/v1/auth/reset-password",
+        json!({
+            "token": reset_token,
+            "new_password": "yet another correct horse battery staple"
+        }),
+    )
+    .await?;
+
+    let reused_token_status = reused_token_response.status();
+    let reused_token_payload = response_json(reused_token_response).await?;
+
+    assert_eq!(
+        (
+            first_reset_status,
+            reused_token_status,
+            reused_token_payload.get("code").and_then(Value::as_str),
+            reused_token_payload.get("message").and_then(Value::as_str),
+            reused_token_payload.get("details").is_none()
+        ),
+        (
+            StatusCode::OK,
+            StatusCode::UNAUTHORIZED,
+            Some("INVALID_OR_EXPIRED_TOKEN"),
+            Some("The password reset token is invalid or expired"),
+            true
+        )
+    );
+
+    Ok(())
+}
+
+#[sqlx::test]
+async fn forgot_password_should_not_reveal_missing_account(database: PgPool) -> Result<()> {
+    let (app, mailer) = build_test_app_with_mailer(database).await?;
+
+    let response = post_json(
+        app,
+        "/api/v1/auth/forgot-password",
+        json!({
+            "email": "missing@example.com"
+        }),
+    )
+    .await?;
+
+    let status = response.status();
+    let payload = response_json(response).await?;
+    let messages = mailer.test_messages().await?;
+
+    assert_eq!(
+        (status, payload, messages.is_empty()),
+        (
+            StatusCode::ACCEPTED,
+            json!({
+                "message": "If the account exists, password reset instructions will be sent to your email."
+            }),
+            true
+        )
+    );
+
+    Ok(())
+}
+
+#[sqlx::test]
 async fn register_should_return_bad_request_when_email_is_invalid(database: PgPool) -> Result<()> {
     let app = build_test_app(database).await?;
 
