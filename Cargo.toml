@@ -3,6 +3,9 @@ name = "rust-catalog-api"
 version = "0.1.0"
 edition = "2024"
 
+[profile.release.package.aws-sdk-s3]
+opt-level = 0
+
 [dependencies]
 anyhow = "1.0.104"
 argon2 = { version = "0.5.3", features = ["std"] }
