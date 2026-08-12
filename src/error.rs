@@ -220,7 +220,7 @@ impl IntoResponse for AppError {
             Self::Internal { request_id } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "INTERNAL_ERROR",
-                "An internal error occured",
+                "An internal error occurred",
                 request_id,
                 None,
             ),

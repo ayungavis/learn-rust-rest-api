@@ -145,6 +145,7 @@ make build-docker
 - Use `/api/v1/health/live` to check that the process is running.
 - Use `/api/v1/health/ready` to check that the application can reach PostgreSQL.
 - Capture the `x-request-id` response header in frontend error reports.
+- Search request logs for the matching `request_id` when investigating failures.
 - Monitor HTTP status and latency from the request logs.
 - A readiness response of `503` means the database check failed.
 - Email failures point to `SMTP_URL` or `MAIL_FROM`; image failures point to the R2 credentials, bucket, or public base URL.

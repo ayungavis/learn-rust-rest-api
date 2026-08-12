@@ -17,7 +17,7 @@ impl Config {
         let address = env::var("APP_ADDRESS")
             .context("APP_ADDRESS environment variable is required")?
             .parse::<SocketAddr>()
-            .context("APP_ADDRESS mut use the format IP:PORT")?;
+            .context("APP_ADDRESS must use the format IP:PORT")?;
 
         let database_url =
             env::var("DATABASE_URL").context("DATABASE_URL environment variable is required")?;
@@ -26,7 +26,7 @@ impl Config {
             env::var("FRONTEND_URL").context("FRONTEND_URL environment variable is required")?;
 
         let mail_from =
-            env::var("MAIL_FROM").context("MAIL_FRON environment variable is required")?;
+            env::var("MAIL_FROM").context("MAIL_FROM environment variable is required")?;
 
         let smtp_url = env::var("SMTP_URL").context("SMTP_URL environment variable is required")?;
 

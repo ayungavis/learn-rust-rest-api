@@ -47,7 +47,7 @@ pub enum ObjectStorageInitError {
         #[source]
         source: env::VarError,
     },
-    #[error("required environment vairable {name} is empty")]
+    #[error("required environment variable {name} is empty")]
     EmptyEnvironment { name: &'static str },
 }
 

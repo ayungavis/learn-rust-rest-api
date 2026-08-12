@@ -18,8 +18,6 @@ async fn main() -> Result<()> {
         .compact()
         .init();
 
-    dotenvy::dotenv().ok();
-
     let config = Config::from_env()?;
     let database = PgPoolOptions::new()
         .max_connections(5)
@@ -90,7 +88,7 @@ async fn main() -> Result<()> {
         .await
         .context("object cleanup worker task failed")?;
 
-    server_result.context("HTPP server failed")?;
+    server_result.context("HTTP server failed")?;
 
     Ok(())
 }

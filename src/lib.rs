@@ -18,7 +18,7 @@ use tower::{ServiceBuilder, timeout::TimeoutLayer};
 use tower_http::{
     cors::CorsLayer,
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
-    trace::{DefaultMakeSpan, DefaultOnRequest, DefaultOnResponse, TraceLayer},
+    trace::{DefaultOnRequest, DefaultOnResponse, TraceLayer},
 };
 use tracing::Level;
 use utoipa::OpenApi;
@@ -65,7 +65,21 @@ pub fn build_router(state: AppState, frontend_origin: HeaderValue) -> Router {
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         .layer(
             TraceLayer::new_for_http()
-                .make_span_with(DefaultMakeSpan::new().include_headers(false))
+                .make_span_with(|request: &axum::http::Request<_>| {
+                    let request_id = request
+                        .headers()
+                        .get("x-request-id")
+                        .and_then(|value| value.to_str().ok())
+                        .unwrap_or("missing-or-invalid-request-id");
+
+                    tracing::info_span!(
+                        "http_request",
+                        request_id,
+                        method = %request.method(),
+                        path = request.uri().path(),
+                        version = ?request.version()
+                    )
+                })
                 .on_request(DefaultOnRequest::new().level(Level::INFO))
                 .on_response(DefaultOnResponse::new().level(Level::INFO)),
         )
@@ -111,7 +125,5 @@ async fn handle_middleware_error(
     if error.is::<tower::timeout::error::Elapsed>() {
         return AppError::request_timeout(&request_id);
     }
-
-    tracing::error!(error = ?error, "unhandled middleware error");
     AppError::internal(&request_id, "middleware", error.as_ref())
 }
