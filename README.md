@@ -159,6 +159,9 @@ make build-docker
 - Configure liveness and readiness probes with the health endpoints above.
 - Preserve `SIGINT` delivery so the HTTP server and cleanup worker can shut down gracefully.
 - Run `make validate` and `make build-docker` before release.
+- Set `FRONTEND_URL` to the exact production frontend origin; do not use a wildcard origin.
+- Rate-limit registration, login, email confirmation, and password-reset endpoints at the load balancer, API gateway, or Cloudflare edge.
+- Configure automated PostgreSQL backups and verify a restore before the first production release.
 
 ## Project layout
 
