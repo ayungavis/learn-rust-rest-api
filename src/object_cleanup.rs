@@ -23,7 +23,7 @@ struct ObjectDeletionJob {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum JobFailureDisposition {
     RetryAfterSeconds(i64),
-    PermantentlyFailed,
+    PermanentlyFailed,
 }
 
 /// Deletes queued R2 objects until cancellation is requested
@@ -127,7 +127,7 @@ async fn process_job(
                         "R2 object deletion will be retried"
                     );
                 }
-                JobFailureDisposition::PermantentlyFailed => {
+                JobFailureDisposition::PermanentlyFailed => {
                     tracing::error!(
                         job_id = %job.id,
                         object_key = job.object_key,
@@ -168,7 +168,7 @@ async fn record_job_failure(
         JobFailureDisposition::RetryAfterSeconds(delay_seconds) => {
             reschedule_job(database, job.id, delay_seconds, &error_message).await?;
         }
-        JobFailureDisposition::PermantentlyFailed => {
+        JobFailureDisposition::PermanentlyFailed => {
             mark_job_failed(database, job.id, &error_message).await?;
         }
     }
@@ -229,7 +229,7 @@ fn retry_delay_seconds(attempts: i32) -> i64 {
 
 fn job_failure_disposition(attempts: i32) -> JobFailureDisposition {
     if attempts >= MAX_DELETE_ATTEMPTS {
-        return JobFailureDisposition::PermantentlyFailed;
+        return JobFailureDisposition::PermanentlyFailed;
     }
 
     JobFailureDisposition::RetryAfterSeconds(retry_delay_seconds(attempts))
@@ -263,7 +263,7 @@ mod tests {
     fn job_failure_should_stop_retrying_at_maximum_attempts() {
         assert_eq!(
             job_failure_disposition(MAX_DELETE_ATTEMPTS),
-            JobFailureDisposition::PermantentlyFailed
+            JobFailureDisposition::PermanentlyFailed
         );
     }
 }
