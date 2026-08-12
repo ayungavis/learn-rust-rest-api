@@ -122,6 +122,12 @@ make test
 
 A successful test run ends with `test result: ok` and no failed tests.
 
+## Continuous integration
+
+GitHub Actions runs formatting checks, Clippy with warnings denied, PostgreSQL-backed tests, and a Docker image build for every pull request and every push to `main`.
+
+The CI database is temporary. The workflow does not use production SMTP, PostgreSQL, or Cloudflare R2 credentials.
+
 ## Docker
 
 Run the production image with the local `.env` file:
