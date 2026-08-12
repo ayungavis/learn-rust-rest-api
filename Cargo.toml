@@ -50,7 +50,7 @@ tokio = { version = "1.53.1", features = [
 ] }
 tokio-util = { version = "0.7.19", features = ["rt"] }
 tower = { version = "0.5.3", features = ["timeout", "util"] }
-tower-http = { version = "0.7.0", features = ["request-id", "trace"] }
+tower-http = { version = "0.7.0", features = ["cors", "request-id", "trace"] }
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
 utoipa = { version = "5.5.0", features = ["time", "uuid"] }

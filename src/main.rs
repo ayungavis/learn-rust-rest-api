@@ -3,6 +3,7 @@ mod config;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use axum::http::HeaderValue;
 use rust_catalog_api::{AppState, Mailer, ObjectStorage, build_router, run_object_cleanup_worker};
 use sqlx::postgres::PgPoolOptions;
 use tokio::net::TcpListener;
@@ -32,6 +33,11 @@ async fn main() -> Result<()> {
         .await
         .context("failed to run database migrations")?;
 
+    let frontend_origin = config
+        .frontend_url
+        .parse::<HeaderValue>()
+        .context("FRONTEND_URL must be a valid HTTP Origin header value")?;
+
     let mailer = Mailer::new(&config.smtp_url, &config.mail_from, config.frontend_url)
         .context("failed to configure email transport")?;
 
@@ -51,7 +57,7 @@ async fn main() -> Result<()> {
         cancellation.child_token(),
     ));
 
-    let app = build_router(state);
+    let app = build_router(state, frontend_origin);
     let listener = TcpListener::bind(config.address)
         .await
         .with_context(|| format!("failed to bind HTTP listener to {}", config.address))?;

@@ -6,7 +6,7 @@ use argon2::{
 use axum::{
     Router,
     body::{Body, to_bytes},
-    http::{Request, StatusCode, header::CONTENT_TYPE, request::Builder},
+    http::{HeaderValue, Request, StatusCode, header::CONTENT_TYPE, request::Builder},
     response::Response,
 };
 use rust_catalog_api::{AppState, Mailer, ObjectStorage, build_router};
@@ -18,6 +18,8 @@ use uuid::Uuid;
 pub const VERIFIED_USER_EMAIL: &str = "learner@example.com";
 pub const VERIFIED_USER_PASSWORD: &str = "correct horse battery staple";
 pub const VERIFIED_USER_DISPLAY_NAME: &str = "Rust Learner";
+
+pub const FRONTEND_ORIGIN: &str = "http://localhost:5173";
 
 pub async fn build_test_app(database: PgPool) -> Result<Router> {
     let (app, _, _) = build_test_app_with_dependencies(database).await?;
@@ -41,16 +43,19 @@ async fn build_test_app_with_dependencies(
 ) -> Result<(Router, Mailer, ObjectStorage)> {
     let mailer = Mailer::new_test(
         "Rust Catalog <noreply@example.com>",
-        "http://localhost:5173".to_owned(),
+        FRONTEND_ORIGIN.to_owned(),
     )?;
 
     let storage = ObjectStorage::new_test().await;
 
-    let app = build_router(AppState {
-        database,
-        mailer: mailer.clone(),
-        storage: storage.clone(),
-    });
+    let app = build_router(
+        AppState {
+            database,
+            mailer: mailer.clone(),
+            storage: storage.clone(),
+        },
+        HeaderValue::from_static(FRONTEND_ORIGIN),
+    );
 
     Ok((app, mailer, storage))
 }

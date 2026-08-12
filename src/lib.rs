@@ -4,6 +4,10 @@ use axum::{
     BoxError, Extension, Router,
     error_handling::HandleErrorLayer,
     extract::DefaultBodyLimit,
+    http::{
+        HeaderName, HeaderValue, Method,
+        header::{AUTHORIZATION, CONTENT_TYPE},
+    },
     routing::{get, post, put},
 };
 pub use mail::Mailer;
@@ -12,6 +16,7 @@ pub use state::AppState;
 pub use storage::ObjectStorage;
 use tower::{ServiceBuilder, timeout::TimeoutLayer};
 use tower_http::{
+    cors::CorsLayer,
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
     trace::{DefaultMakeSpan, DefaultOnRequest, DefaultOnResponse, TraceLayer},
 };
@@ -43,7 +48,19 @@ mod profile;
 mod state;
 mod storage;
 
-pub fn build_router(state: AppState) -> Router {
+pub fn build_router(state: AppState, frontend_origin: HeaderValue) -> Router {
+    let cors = CorsLayer::new()
+        .allow_origin(frontend_origin)
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+        ])
+        .allow_headers([AUTHORIZATION, CONTENT_TYPE])
+        .expose_headers([HeaderName::from_static("x-request-id")]);
+
     let middleware = ServiceBuilder::new()
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         .layer(
@@ -78,6 +95,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .merge(SwaggerUi::new("/docs").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .fallback(route_not_found)
+        .layer(cors)
         .layer(middleware)
         .with_state(state)
 }

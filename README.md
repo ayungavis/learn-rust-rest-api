@@ -43,18 +43,18 @@ A REST API built with Rust and Axum for authentication, user profiles, and a pro
 
 2. Replace every placeholder in `.env` with valid local or Cloudflare values.
 
-   | Variable               | Purpose                                              |
-   | ---------------------- | ---------------------------------------------------- |
-   | `APP_ADDRESS`          | HTTP bind address, normally `0.0.0.0:3000`           |
-   | `DATABASE_URL`         | PostgreSQL connection URL                            |
-   | `SMTP_URL`             | SMTP server URL                                      |
-   | `FRONTEND_URL`         | Frontend origin used in confirmation and reset links |
-   | `MAIL_FROM`            | Sender name and email address                        |
-   | `R2_ACCOUNT_ID`        | Cloudflare account ID                                |
-   | `R2_ACCESS_KEY_ID`     | R2 access key ID                                     |
-   | `R2_SECRET_ACCESS_KEY` | R2 secret access key                                 |
-   | `R2_BUCKET`            | R2 bucket name                                       |
-   | `R2_PUBLIC_BASE_URL`   | Public bucket or custom-domain base URL              |
+   | Variable               | Purpose                                                 |
+   | ---------------------- | ------------------------------------------------------- |
+   | `APP_ADDRESS`          | HTTP bind address, normally `0.0.0.0:3000`              |
+   | `DATABASE_URL`         | PostgreSQL connection URL                               |
+   | `SMTP_URL`             | SMTP server URL                                         |
+   | `FRONTEND_URL`         | Frontend origin allowed by CORS and used in email links |
+   | `MAIL_FROM`            | Sender name and email address                           |
+   | `R2_ACCOUNT_ID`        | Cloudflare account ID                                   |
+   | `R2_ACCESS_KEY_ID`     | R2 access key ID                                        |
+   | `R2_SECRET_ACCESS_KEY` | R2 secret access key                                    |
+   | `R2_BUCKET`            | R2 bucket name                                          |
+   | `R2_PUBLIC_BASE_URL`   | Public bucket or custom-domain base URL                 |
 
 3. Ensure PostgreSQL, SMTP, and R2 are reachable with those values.
 
