@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref}}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -44,14 +44,34 @@ jobs:
       - name: Install Rust toolchain
         run: rustup toolchain install 1.94.1 --profile minimal --component rustfmt,clippy --no-self-update
 
+      - name: Restore Rust cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-rust-1.94.1-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ runner.arch }}-rust-1.94.1-
+
       - name: Check formatting
         run: cargo +1.94.1 fmt --all -- --check
 
-      - name: Run clippy
+      - name: Run Clippy
         run: cargo +1.94.1 clippy --all-targets --all-features --locked -- -D warnings
 
       - name: Run tests
         run: cargo +1.94.1 test --locked
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
       - name: Build Docker image
-        run: docker build --tag rust-catalog-api:ci .
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false
+          cache-from: type=gha,scope=rust-catalog-api-ci
+          cache-to: type=gha,mode=max,scope=rust-catalog-api-ci
