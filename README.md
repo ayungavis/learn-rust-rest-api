@@ -147,6 +147,7 @@ make build-docker
 - Capture the `x-request-id` response header in frontend error reports.
 - Search request logs for the matching `request_id` when investigating failures.
 - Monitor HTTP status and latency from the request logs.
+- Alert on `R2 object deletion permanently failed`; the object cleanup job exhausted its retries and requires investigation.
 - A readiness response of `503` means the database check failed.
 - Email failures point to `SMTP_URL` or `MAIL_FROM`; image failures point to the R2 credentials, bucket, or public base URL.
 

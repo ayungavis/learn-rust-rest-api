@@ -20,7 +20,13 @@ struct ObjectDeletionJob {
     attempts: i32,
 }
 
-/// Deletes queued R2 objects until cancellation is requestd
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum JobFailureDisposition {
+    RetryAfterSeconds(i64),
+    PermantentlyFailed,
+}
+
+/// Deletes queued R2 objects until cancellation is requested
 pub async fn run_object_cleanup_worker(
     database: PgPool,
     storage: ObjectStorage,
@@ -108,15 +114,29 @@ async fn process_job(
         }
 
         Err(error) => {
-            record_job_failure(database, &job, &error).await?;
+            let disposition = record_job_failure(database, &job, &error).await?;
 
-            tracing::warn!(
-                job_id = %job.id,
-                object_key = job.object_key,
-                attempts = job.attempts,
-                error = ?error,
-                "R2 object deletion will be retried"
-            );
+            match disposition {
+                JobFailureDisposition::RetryAfterSeconds(delay_seconds) => {
+                    tracing::warn!(
+                        job_id = %job.id,
+                        object_key = job.object_key,
+                        attempts = job.attempts,
+                        delay_seconds,
+                        error = ?error,
+                        "R2 object deletion will be retried"
+                    );
+                }
+                JobFailureDisposition::PermantentlyFailed => {
+                    tracing::error!(
+                        job_id = %job.id,
+                        object_key = job.object_key,
+                        attempts = job.attempts,
+                        error = ?error,
+                        "R2 object deletion permanently failed"
+                    );
+                }
+            }
         }
     }
 
@@ -136,23 +156,24 @@ async fn record_job_failure(
     database: &PgPool,
     job: &ObjectDeletionJob,
     error: &ObjectStorageError,
-) -> Result<(), sqlx::Error> {
+) -> Result<JobFailureDisposition, sqlx::Error> {
     let error_message: String = format!("{error:?}")
         .chars()
         .take(MAX_ERROR_MESSAGE_CHARS)
         .collect();
 
-    if job.attempts >= MAX_DELETE_ATTEMPTS {
-        return mark_job_failed(database, job.id, &error_message).await;
+    let disposition = job_failure_disposition(job.attempts);
+
+    match disposition {
+        JobFailureDisposition::RetryAfterSeconds(delay_seconds) => {
+            reschedule_job(database, job.id, delay_seconds, &error_message).await?;
+        }
+        JobFailureDisposition::PermantentlyFailed => {
+            mark_job_failed(database, job.id, &error_message).await?;
+        }
     }
 
-    reschedule_job(
-        database,
-        job.id,
-        retry_delay_seconds(job.attempts),
-        &error_message,
-    )
-    .await
+    Ok(disposition)
 }
 
 async fn mark_job_failed(
@@ -206,9 +227,19 @@ fn retry_delay_seconds(attempts: i32) -> i64 {
     5 * 2_i64.pow(exponent.cast_unsigned())
 }
 
+fn job_failure_disposition(attempts: i32) -> JobFailureDisposition {
+    if attempts >= MAX_DELETE_ATTEMPTS {
+        return JobFailureDisposition::PermantentlyFailed;
+    }
+
+    JobFailureDisposition::RetryAfterSeconds(retry_delay_seconds(attempts))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::retry_delay_seconds;
+    use super::{
+        JobFailureDisposition, MAX_DELETE_ATTEMPTS, job_failure_disposition, retry_delay_seconds,
+    };
 
     #[test]
     fn retry_delay_should_start_at_five_seconds() {
@@ -218,5 +249,21 @@ mod tests {
     #[test]
     fn retry_delay_should_cap_at_one_hundred_sixty_seconds() {
         assert_eq!(retry_delay_seconds(10), 160);
+    }
+
+    #[test]
+    fn job_failure_should_schedule_retry_before_maximum_attempts() {
+        assert_eq!(
+            job_failure_disposition(MAX_DELETE_ATTEMPTS - 1),
+            JobFailureDisposition::RetryAfterSeconds(160)
+        );
+    }
+
+    #[test]
+    fn job_failure_should_stop_retrying_at_maximum_attempts() {
+        assert_eq!(
+            job_failure_disposition(MAX_DELETE_ATTEMPTS),
+            JobFailureDisposition::PermantentlyFailed
+        );
     }
 }
