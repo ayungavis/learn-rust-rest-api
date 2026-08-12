@@ -6,7 +6,9 @@ COPY Cargo.toml Cargo.lock build.rs ./
 COPY migrations ./migrations
 COPY src ./src
 
-RUN cargo build --locked --release --bin rust-catalog-api --jobs 1 \
+RUN --mount=type=cache,id=s/caa9f51b-9340-4941-87d0-1cf7e897fbcf-/usr/local/cargo/registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=s/caa9f51b-9340-4941-87d0-1cf7e897fbcf-/app/target,target=/app/target,sharing=locked \
+    cargo build --locked --release --bin rust-catalog-api --jobs 1 \
     && cp /app/target/release/rust-catalog-api /tmp/rust-catalog-api
 
 FROM debian:bookworm-slim AS runtime

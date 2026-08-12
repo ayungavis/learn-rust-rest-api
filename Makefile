@@ -16,7 +16,7 @@ validate:
 	make format && make lint && make test
 
 build-docker:
-	docker build --tag rust-catalog-api:local .
+	docker buildx build --load --tag rust-catalog-api:local .
 
 run-docker-local: build-docker
 	@test -f .env || { echo "error: .env is required" >&2; exit 1; }
