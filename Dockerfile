@@ -6,8 +6,8 @@ COPY Cargo.toml Cargo.lock build.rs ./
 COPY migrations ./migrations
 COPY src ./src
 
-RUN --mount=type=cache,id=s/caa9f51b-9340-4941-87d0-1cf7e897fbcf-/usr/local/cargo/registry,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,id=s/caa9f51b-9340-4941-87d0-1cf7e897fbcf-/app/target,target=/app/target,sharing=locked \
+RUN --mount=type=cache,id=s/08257d5e-1865-4f75-94c5-10212993bbbe-/usr/local/cargo/registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=s/08257d5e-1865-4f75-94c5-10212993bbbe-/app/target,target=/app/target,sharing=locked \
     cargo build --locked --release --bin rust-catalog-api --jobs 1 \
     && cp /app/target/release/rust-catalog-api /tmp/rust-catalog-api
 
